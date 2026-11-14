@@ -7,7 +7,7 @@ import {
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
-import { CheckIcon, CopyIcon, ImageIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, ImageIcon, TriangleAlertIcon } from "lucide-react";
 import {
   type ComponentProps,
   type ComponentPropsWithoutRef,
@@ -29,7 +29,7 @@ import { FileImage } from "@/features/chat/components/cards/kept-file-card";
 import { useSharedImage } from "@/features/chat/hooks/use-inline-images";
 import { safeHttpUrl } from "@/features/chat/lib/a2ui/url";
 import { plainName } from "@/features/chat/lib/files";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { COPY_FAILED, useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { cn } from "@/lib/utils";
 
 type MarkdownTextProps = Partial<TextMessagePartProps> & {
@@ -173,21 +173,35 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components }) => {
 export const MarkdownText = memo(MarkdownTextImpl);
 
 const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, failed, copyToClipboard } = useCopyToClipboard();
   const onCopy = () => {
     if (!code || isCopied) return;
     copyToClipboard(code);
   };
 
   return (
-    <div className="aui-code-header-root border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
+    <div className="aui-code-header-root select-none border-border bg-muted mt-4 flex items-center justify-between rounded-t-xl border border-b-0 py-1 ps-3.5 pe-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
-        {!isCopied && <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />}
-        {isCopied && <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />}
-      </TooltipIconButton>
+      <span className="flex items-center gap-1">
+        <span
+          aria-live="polite"
+          data-slot="copy-note"
+          className={failed ? "text-xs text-foreground" : "sr-only"}
+        >
+          {failed ? COPY_FAILED : ""}
+        </span>
+        <TooltipIconButton tooltip={failed ? COPY_FAILED : "Copy"} onClick={onCopy}>
+          {failed ? <TriangleAlertIcon /> : null}
+          {!isCopied && !failed && (
+            <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
+          )}
+          {isCopied && (
+            <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+          )}
+        </TooltipIconButton>
+      </span>
     </div>
   );
 };
