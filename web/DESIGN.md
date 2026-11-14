@@ -571,10 +571,12 @@ The panel is the thread's second surface, `features/panel/`: two tabs, **Activit
   Show in the side panel". It is a real button (`aria-controls` the panel, `aria-expanded` while the panel
   shows this turn), so Enter and Space open it.
 - **Turn actions** under a turn (`components/assistant-ui/elements/turn-actions.tsx`): **Copy** (the agent's
-  words) and **Fork from here** (`SplitIcon`). They show on hover and while the focus is inside the turn, and
+  words), **Regenerate** (`RefreshCwIcon`, the newest turn only) and **Fork from here** (`SplitIcon`). They show
+  on hover and while the focus is inside the turn, and
   always on a touch screen (no hover there). Fork from here is `aria-disabled` while the turn is going on
   (the newest turn of a working thread), with a tooltip that says why; it is not offered before the page knows
-  where the turn ends in the log. An earlier turn can be forked while a later one runs. See "Fork and branch".
+  where the turn ends in the log. An earlier turn can be forked while a later one runs. Regenerate waits the same
+  way (`aria-disabled`, tooltip "Regenerate (once the agent has finished this turn)"). See "Fork and branch".
 - **Before the first event** a shimmering "Coder is starting…" line under the avatar.
 - **A draft: the words as they are written** (2026-10-01, sys #65: "I want to see the agent's words as they
   are written"). While the model writes its reply the turn shows what it has so far, after the parts the turn
@@ -669,6 +671,22 @@ words and everything after them stay in the first chat, which is the message's o
 - **The list** shows a conversation once: the edits are left out (`GET /api/threads` without
   `branches=include`), and while an edit is open the row of the conversation's first thread is highlighted like
   the open chat, with `aria-current="true"` (`"page"` stays with the address that is open).
+- **Regenerate** (*added 2026-11-14*): a turn action under the **newest** turn, `RefreshCwIcon`, a real button named
+  "Regenerate". It is an edit with the same words: `fork({replace: <seq of the message that began the turn>, text,
+  messageId})` (`ForkProvider.regenerate`), so the answer is a new version and the picker above goes between the two.
+  It sends **no access tier**, so the server keeps the tier of the message it replaces (the contract of `forkThread`
+  says it). It is `aria-disabled` while the turn is going on (tooltip "Regenerate (once the agent has finished this
+  turn)") or a fork is made (tooltip "Regenerating…"). **What begins a turn** is a message of the person: the
+  transcript message right before the agent's must be the person's, with a known `seq` (`regenerableFrom`,
+  `features/threads/lib/regenerate.ts`). It is therefore not drawn on an earlier turn, to a person who may only read,
+  on a shared link (no `ForkProvider`), for a turn that began with a form answer (an action in the agent's own
+  message: no message of the person precedes it), **while a question waits for its answer** (the edit would drop the
+  question), for a message that mentioned an agent (the edit route carries no mentions, so the new version would lose
+  them), or for a message sent while the agent worked (steer or interrupt, `metadata.delivery`): that turn is more than
+  the one message, the agent's earlier work stays before it, so replacing only it would not be "again" (Edit on that
+  message stays as it is). Each regenerate has a message id of its own: kept for a retry after a refusal, dropped on
+  success, and keyed by thread. A refusal is the line under the top bar ("Could not regenerate the answer: …. You can
+  edit the message instead.").
 
 ## A thread's description
 

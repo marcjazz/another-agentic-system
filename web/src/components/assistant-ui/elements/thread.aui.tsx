@@ -47,10 +47,15 @@ import {
 } from "@/features/chat/lib/agui/vymalo";
 import { drawsPart, isAnswerPart, isStepPart } from "@/features/chat/lib/steps";
 import { type TextRole, textRoles } from "@/features/chat/lib/working";
-import { MentionedText, useMessageMentions } from "@/features/mentions/components/mentioned-text";
+import {
+  MentionedText,
+  useMentionsAny,
+  useMessageMentions,
+} from "@/features/mentions/components/mentioned-text";
 import { MessageBranches } from "@/features/threads/components/branch-picker";
 import { ForkDivider } from "@/features/threads/components/fork-divider";
 import { useThreadFork } from "@/features/threads/components/fork-provider";
+import { regenerableFrom } from "@/features/threads/lib/regenerate";
 import { MessageTierBadge } from "@/features/tier/components/tier-badge";
 import { ToolsLine } from "@/features/tools/components/tools-line";
 import type { ApiActor } from "@/lib/api/types";
@@ -540,6 +545,20 @@ function StartingTurn() {
   );
 }
 
+/**
+ * What Regenerate would say again, for the newest turn only (`regenerableFrom`): the person's message
+ * right before it, with its place in the log. The other turns read nothing.
+ */
+function useRegenerable(isLast: boolean, waiting: boolean) {
+  const prior = useAuiState((s) => (isLast ? s.thread.messages[s.message.index - 1] : undefined));
+  const user = prior?.role === "user" ? prior : undefined;
+  const mentioned = useMentionsAny(user?.id, user?.metadata?.custom?.mentions);
+  const { seqOfMessage } = useThreadFork();
+  const custom = user?.metadata?.custom?.seq;
+  const seq = typeof custom === "number" ? custom : user ? seqOfMessage(user.id) : undefined;
+  return regenerableFrom({ prior, seq, mentioned, waiting });
+}
+
 export const AssistantMessage: FC = () => {
   const actor = useRunActor();
   const runId = useRunId();
@@ -551,6 +570,7 @@ export const AssistantMessage: FC = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
   const isLast = useAuiState((s) => s.message.isLast);
   const messageId = useAuiState((s) => s.message.id);
+  const began = useRegenerable(isLast, waiting);
   // the reply being written belongs to the run's message: the newest one of the agent
   const newest = useAuiState((s) => {
     const all = s.thread.messages;
@@ -683,7 +703,7 @@ export const AssistantMessage: FC = () => {
           <LiveDraft key={d.id} id={d.id} text={d.text} />
         ))}
         <TurnCards words={[ownWords, ...writing.map((d) => d.text)].join("\n\n")} />
-        <TurnActions text={ownWords} runId={runId} last={isLast} />
+        <TurnActions text={ownWords} runId={runId} last={isLast} began={began} />
       </div>
     </MessagePrimitive.Root>
   );
