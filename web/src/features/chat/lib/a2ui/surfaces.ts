@@ -76,3 +76,19 @@ export function surfaceOperations(
   }
   return undefined;
 }
+
+/**
+ * Whether the person has already acted on the thread since message `messageId` drew a form: a
+ * `vymalo.action` (on this surface or a later one) or a plain message of theirs comes after it in the
+ * transcript. A form that was sent stays answered when the thread waits again, say because the agent
+ * asked again after refusing the answer (docs/api/ui-catalog-v1.md, "Answered forms"): the form asked
+ * last is the open one, and a message sent while a form is open answers the ask and closes it.
+ */
+export function answeredAfter(messages: readonly Message[], messageId: string): boolean {
+  const at = messages.findIndex((m) => m.id === messageId);
+  if (at < 0) return false;
+  const name = activityPartName(ACTIVITY.action);
+  return messages
+    .slice(at + 1)
+    .some((m) => m.role === "user" || m.content.some((p) => p.type === "data" && p.name === name));
+}

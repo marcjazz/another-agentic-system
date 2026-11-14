@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuiState } from "@assistant-ui/react";
 import { CheckIcon, ChevronsUpDownIcon, ImageOffIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useId, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -24,10 +25,13 @@ import {
   type QuestionState,
   readChoices,
 } from "@/features/chat/lib/a2ui/choices";
+import { isKind } from "@/features/chat/lib/a2ui/choices-kinds";
 import { contextTooLarge } from "@/features/chat/lib/a2ui/context";
 import { MAX_CONTEXT_BYTES } from "@/features/chat/lib/a2ui/limits";
+import { answeredAfter } from "@/features/chat/lib/a2ui/surfaces";
 import type { StepIcon } from "@/features/chat/lib/agui/vymalo";
 import { cn } from "@/lib/utils";
+import { KindQuestion } from "./choices-kinds";
 import { useSurfaceHost } from "./surface-host";
 import { useThreadFiles } from "./thread-files";
 import { useView } from "./view-context";
@@ -35,7 +39,8 @@ import { useView } from "./view-context";
 /*
  * The `Choices` component of the UI catalog (docs/api/ui-catalog-v1.md, version 5): a form of up to
  * 8 questions with a title and a description of why the agent asks, and per question a type: radio
- * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer; optionally an
+ * buttons, check boxes, a searchable list, a deck of pictures, or a typed answer (and, from version
+ * 7, a yes or no, a number, a scale, a day or a list to put in order: `choices-kinds.tsx`); optionally an
  * "Other" of the person's own words per question and a free box for the whole form. One submit sends
  * ONE action, and nothing sends but that click (ADR 0013 rule 7): Enter in a text box does nothing,
  * because there is no form.
@@ -495,6 +500,17 @@ function Question({
   const typed = isTyping(question.type);
   const range = rangeHint(question);
   const hasNotes = Boolean(question.help || range);
+  if (isKind(question.type)) {
+    return (
+      <KindQuestion
+        question={question}
+        name={name}
+        state={state}
+        enabled={enabled}
+        onChange={onChange}
+      />
+    );
+  }
   if (typed) {
     return (
       <TypedAnswer
@@ -630,11 +646,13 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
   const spec = readChoices(props);
   const [state, setState] = useState<AnswerState>(() => (spec ? initialState(spec) : new Map()));
   const [note, setNote] = useState("");
+  const answered = useAuiState((s) => answeredAfter(s.thread.messages, s.message.id));
   if (!spec) return null;
 
   // the answers go to the agent while the thread waits for them, from the newest copy only; once
-  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input
-  const enabled = view.live && host.canSend;
+  // sent (or in a thread that moved on) the choices stay as they were, and stop taking input,
+  // and so does a form that was sent when the thread waits again (the agent asked again)
+  const enabled = view.live && host.canSend && !answered;
   const left = missing(spec, state);
   const patch = (id: string, p: Partial<QuestionState>) =>
     setState((s) => new Map(s).set(id, { ...(s.get(id) ?? EMPTY), ...p }));
@@ -701,8 +719,11 @@ export function ChoicesInput(props: Record<string, unknown>): ReactNode {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           type="button"
-          disabled={!enabled || left > 0}
+          disabled={!enabled}
+          // held by words, not by `disabled`: a disabled button cannot be reached by keyboard to read why
+          aria-disabled={enabled && left > 0 ? true : undefined}
           aria-describedby={enabled && left > 0 ? hint : undefined}
+          className="aria-disabled:opacity-50"
           onClick={send}
         >
           {spec.submitLabel ?? "Send answers"}
