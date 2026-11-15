@@ -22,6 +22,7 @@ use crate::codec::{
     outbox_cols, outbox_from_row, parse_enum, thread_cols, thread_from_row, to_db, ts,
 };
 use crate::error::{is_unique_violation, migrate_err, store_err};
+use crate::search;
 use crate::usage;
 use crate::wakeup::{CHANNEL_INBOX, CHANNEL_OUTBOX, CHANNEL_THREAD};
 
@@ -193,8 +194,9 @@ impl PgStore {
         let inserted = sqlx::query(
             "INSERT INTO threads (id, owner, title, description, agent_id, release, state, job, \
              version, last_seq, created_at, updated_at, forked_from, forked_at, fork_kind, \
-             rail_parent, rail_rank) \
-             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15)",
+             rail_parent, rail_rank, title_terms, description_terms) \
+             VALUES ($1, $2, $3, $13, $4, $5, $6, $7, 1, $9, $8, $8, $10, $11, $12, $14, $15, \
+             array_to_tsvector($16::text[]), array_to_tsvector($17::text[]))",
         )
         .bind(new.id.0)
         .bind(new.owner.as_str())
@@ -211,6 +213,10 @@ impl PgStore {
         .bind(new.description.as_deref().filter(|d| !d.is_empty()))
         .bind(new.rail_parent.map(|p| p.0))
         .bind(&rail_rank)
+        .bind(search::keys_of(Some(&new.title)))
+        .bind(search::keys_of(
+            new.description.as_deref().filter(|d| !d.is_empty()),
+        ))
         .execute(&mut *tx)
         .await;
         if let Err(e) = inserted {
@@ -261,19 +267,35 @@ impl PgStore {
         // the usage ledger, in the transaction of the events (ADR 0065); what a fork copied was
         // counted in its parent, so only the events of its own are folded in
         usage::fold_events(&mut tx, &new.owner, &events).await?;
+        // the search index, in the same transaction (ADR 0068): what a fork copied is indexed from the
+        // fork's own log (the parent's rows may no longer hold a message it replaced), then the events
+        // of its own
+        let search_reached = if cut > 0 {
+            search::catch_up_before_commit(&mut tx, new.id, &new.owner, 0, cut).await?
+        } else {
+            0
+        };
+        search::index_events(&mut tx, new.id, &new.owner, &events).await?;
         insert_outbox(&mut tx, new.id, first.outbox, first.now).await?;
         let rearmed =
             insert_watches_and_timers(&mut tx, new.id, &first.watches, first.timers, first.now)
                 .await?;
         let last_seq = cut + i64::try_from(events.len()).unwrap_or(i64::MAX - cut);
+        let search_through = if search_reached >= cut {
+            last_seq
+        } else {
+            search_reached
+        };
         let row = sqlx::query(concat!(
-            "UPDATE threads SET last_seq = $2, usage_through = $2, updated_at = $3 \
-             WHERE id = $1 RETURNING ",
+            "UPDATE threads SET last_seq = $2, usage_through = $2, search_through = $4, search_fold = $5, \
+             updated_at = $3 WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
         .bind(new.id.0)
         .bind(last_seq)
         .bind(to_db(first.now))
+        .bind(search_through)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -516,7 +538,7 @@ impl PgStore {
     }
 }
 
-fn archived_name(filter: ArchivedFilter) -> &'static str {
+pub(crate) fn archived_name(filter: ArchivedFilter) -> &'static str {
     match filter {
         ArchivedFilter::Exclude => "exclude",
         ArchivedFilter::Only => "only",
@@ -1600,8 +1622,8 @@ impl ThreadStore for PgStore {
         // The row lock serialises every writer of this thread: the seq counter below cannot
         // be raced, so seq has no gaps and no duplicates (READ COMMITTED is enough).
         let locked = sqlx::query(
-            "SELECT version, last_seq, state, owner, usage_through, forked_at FROM threads \
-                 WHERE id = $1 FOR UPDATE",
+            "SELECT version, last_seq, state, owner, usage_through, forked_at, search_through, \
+                 search_fold, title, description FROM threads WHERE id = $1 FOR UPDATE",
         )
         .bind(thread.0)
         .fetch_optional(&mut *tx)
@@ -1718,9 +1740,46 @@ impl ThreadStore for PgStore {
         if behind < last_seq {
             usage::catch_up(&mut tx, thread, &owner, behind, last_seq).await?;
         }
+        // The search index (ADR 0068), the same way, but **bounded**: some of what it has not been through
+        // first (at most COMMIT_CATCH_UP_EVENTS events, the watermark advancing only as far as it got), with
+        // the title and description of the row, then this commit's events, always. A thread stored under
+        // another fold version starts again from nothing.
+        let mut search_through: i64 = locked.try_get("search_through").map_err(store_err)?;
+        let search_fold: i32 = locked.try_get("search_fold").map_err(store_err)?;
+        if search_fold != orch_core::search::FOLD_VERSION {
+            search::delete_index(&mut tx, thread).await?;
+            search_through = 0;
+        }
+        let search_behind =
+            search_through < last_seq || search_fold != orch_core::search::FOLD_VERSION;
+        let (mut title_keys, mut description_keys) = (None, None);
+        let mut search_reached = last_seq;
+        if search_behind {
+            search_reached =
+                search::catch_up_before_commit(&mut tx, thread, &owner, search_through, last_seq)
+                    .await?;
+            let title: String = locked.try_get("title").map_err(store_err)?;
+            let description: Option<String> = locked.try_get("description").map_err(store_err)?;
+            title_keys = Some(search::keys_of(Some(&title)));
+            description_keys = Some(search::keys_of(description.as_deref()));
+        }
         let events = insert_events(&mut tx, thread, last_seq + 1, commit.events).await?;
         usage::fold_events(&mut tx, &owner, &events).await?;
+        search::index_events(&mut tx, thread, &owner, &events).await?;
+        // a title or description this commit writes is the one that is searched
+        if let Some(title) = &commit.title {
+            title_keys = Some(search::keys_of(Some(title)));
+        }
+        if let Some(description) = &commit.description {
+            description_keys = Some(search::keys_of(Some(description)));
+        }
         let new_last_seq = last_seq + i64::try_from(events.len()).unwrap_or(0);
+        // the index is through the whole log only if the old part was finished; else exactly where it stopped
+        let search_through_after = if search_reached >= last_seq {
+            new_last_seq
+        } else {
+            search_reached
+        };
         // The job is written with the state, under the same lock and version check; a commit
         // without one leaves the stored job alone.
         let job = commit.job.as_ref().map(job_json).transpose()?;
@@ -1733,7 +1792,13 @@ impl ThreadStore for PgStore {
                  ELSE share_nonce END, \
              shared_at = CASE $8::text WHEN 'set' THEN $4 WHEN 'clear' THEN NULL \
                  ELSE shared_at END, \
-             version = version + 1, last_seq = $3, usage_through = $3, updated_at = $4 \
+             version = version + 1, last_seq = $3, usage_through = $3, search_through = $13, \
+             search_fold = $14, \
+             title_terms = CASE WHEN $11::text[] IS NULL THEN title_terms \
+                 ELSE array_to_tsvector($11) END, \
+             description_terms = CASE WHEN $12::text[] IS NULL THEN description_terms \
+                 ELSE array_to_tsvector($12) END, \
+             updated_at = $4 \
              WHERE id = $1 RETURNING ",
             thread_cols!()
         ))
@@ -1747,6 +1812,10 @@ impl ThreadStore for PgStore {
         .bind(sharing_op(commit.sharing))
         .bind(sharing_level(commit.sharing))
         .bind(sharing_nonce(commit.sharing))
+        .bind(title_keys)
+        .bind(description_keys)
+        .bind(search_through_after)
+        .bind(orch_core::search::FOLD_VERSION)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| {

@@ -55,6 +55,15 @@ import {
 } from "./projection";
 import { cancelSteps, longThreadTurn, nextMessageId, type Step, scriptFor } from "./scripts";
 import {
+  type LogEvent,
+  MAX_QUERY_LENGTH,
+  MAX_TERMS,
+  readRequest,
+  type Searchable,
+  searchableMessages,
+  searchThreads,
+} from "./search";
+import {
   type CardTiers,
   readOffer,
   readTierProp,
@@ -566,6 +575,13 @@ export function createMockServer(options: MockOptions = {}): http.Server {
   const readBody = (req: http.IncomingMessage): Promise<unknown> =>
     readJson(req).catch(() => undefined);
 
+  const readBytes = (req: http.IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
   const readJson = (req: http.IncomingMessage): Promise<unknown> =>
     new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
@@ -1716,6 +1732,8 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     if (path === "/api/config" && method === "GET") {
       const { showDescriptions, history } = registryOf(sessionOf(req));
       return sendJson(res, 200, {
+        // the capability: this server serves `searchThreads` (ADR 0068)
+        search: { maxQueryLength: MAX_QUERY_LENGTH, maxTerms: MAX_TERMS },
         ui: {
           showDescriptions,
           ...(history
@@ -1756,6 +1774,7 @@ export function createMockServer(options: MockOptions = {}): http.Server {
     }
 
     if (path === "/api/threads" && method === "GET") return listThreads(req, res, url);
+    if (path === "/api/search/threads" && method === "POST") return searchThreadsRoute(req, res);
 
     const run = /^\/agui\/agents\/([^/]+)$/.exec(path);
     if (run && method === "POST") return runAgent(req, res, decodeURIComponent(run[1] ?? ""));
@@ -1990,6 +2009,103 @@ export function createMockServer(options: MockOptions = {}): http.Server {
       200,
       all.slice(0, limit).map((t) => viewOf(t, { cap, link: false })),
     );
+  }
+
+  /**
+   * `POST /api/search/threads` (`searchThreads`, ADR 0068): the caller's own threads and nobody else's, found by
+   * `search.ts`, the second implementation of docs/api/thread-search-v1.md. A person searches in a burst of 20
+   * and then twice a second (a token bucket, 429 with `Retry-After`).
+   */
+  const searchBuckets = new Map<string, { tokens: number; at: number }>();
+  const SEARCH_BURST = 20;
+  const SEARCH_REFILL_MS = 500;
+  async function searchThreadsRoute(req: http.IncomingMessage, res: http.ServerResponse) {
+    const me = meOf(req);
+    const now = Date.now();
+    // a session is a person here, so a test that searches a lot does not limit the next one
+    const who = sessionOf(req);
+    const bucket = searchBuckets.get(who) ?? { tokens: SEARCH_BURST, at: now };
+    bucket.tokens = Math.min(SEARCH_BURST, bucket.tokens + (now - bucket.at) / SEARCH_REFILL_MS);
+    bucket.at = now;
+    searchBuckets.set(who, bucket);
+    if (bucket.tokens < 1) {
+      res.setHeader("Retry-After", "1");
+      return problem(
+        res,
+        429,
+        "Too Many Requests",
+        "too many searches: try again shortly",
+        "rate_limited",
+      );
+    }
+    bucket.tokens -= 1;
+    if (!holds(me, "thread.read")) return forbid(res, "thread.read");
+    // the request as docs/api/thread-search-v1.md reads it: media type, shape, then (in `searchThreads`) the query, the limit, the
+    // filters and the cursor, in that order
+    const bytes = await readBytes(req);
+    let raw: string;
+    try {
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      raw = "\u0000"; // not UTF-8: not JSON, but the media type is judged first
+    }
+    const read = readRequest(req.headers["content-type"], raw);
+    if (!read.ok) {
+      return read.status === 415
+        ? problem(res, 415, "Unsupported Media Type", "the body is application/json")
+        : problem(res, 400, "Bad Request", "the body is not a search request", "bad_request");
+    }
+    const mine: Searchable[] = [...threads.values()]
+      .filter((t) => t.owner === me.user)
+      .map((t) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description ?? null,
+        archived: railOf(t.id).archivedAt !== undefined,
+        edit: isEdit(t.id),
+        ...(t.forkedFrom?.threadId !== undefined ? { copiedThrough: t.forkedFrom.seq } : {}),
+        messages: searchableMessages(
+          (events.get(t.id) ?? []).flatMap((e): LogEvent[] => {
+            const data = e.data as Record<string, unknown>;
+            if (e.kind !== "user_message" && e.kind !== "agent_message") return [];
+            return [
+              {
+                seq: e.seq,
+                at: e.at,
+                kind: e.kind,
+                text: typeof data.text === "string" ? data.text : "",
+                ...(typeof data.messageId === "string" ? { messageId: data.messageId } : {}),
+                ...(typeof data.final === "boolean" ? { final: data.final } : {}),
+                ...(typeof data.purpose === "string" ? { purpose: data.purpose } : {}),
+              },
+            ];
+          }),
+        ),
+      }));
+    const found = searchThreads(mine, read.request);
+    if (!found.ok) {
+      const detail =
+        found.code === "query_empty"
+          ? "the query is empty"
+          : found.code === "query_too_long"
+            ? `the query is longer than ${MAX_QUERY_LENGTH} characters`
+            : found.code === "bad_cursor"
+              ? "not a cursor of this request"
+              : "limit is 1 to 50";
+      return problem(res, 400, "Bad Request", detail, found.code);
+    }
+    const cap = capOf(req);
+    const { terms, results, next } = found.page;
+    sendJson(res, 200, {
+      query: { terms },
+      results: results.map((h) => ({
+        thread: viewOf(threads.get(h.id) as Thread, { cap, link: false }),
+        rank: h.rank,
+        hits: h.hits,
+        messageHits: h.messageHits,
+      })),
+      ...(next !== undefined ? { next } : {}),
+    });
   }
 
   /**
