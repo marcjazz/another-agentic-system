@@ -1,5 +1,88 @@
 # Changelog
 
+## [0.8.0](https://github.com/vymalo/another-agentic-system/compare/v0.7.1...v0.8.0) (2026-11-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** a store outside this repository must implement PromptStore.
+
+### Features
+
+* **api:** a person searches their own threads (the API, the index, the contract and the mock) ([#322](https://github.com/vymalo/another-agentic-system/issues/322)) ([00a4a30](https://github.com/vymalo/another-agentic-system/commit/00a4a306023da8f0fa14ca4f21387dbf1701f710))
+* **api:** a person's prompt library, the API half (ADR 0070) ([#324](https://github.com/vymalo/another-agentic-system/issues/324)) ([bb4d722](https://github.com/vymalo/another-agentic-system/commit/bb4d72275353d9ab166eea924cc9b9e6ff846fd0))
+* **chart:** a rate limit per client address at the Ingress, off by default ([#307](https://github.com/vymalo/another-agentic-system/issues/307)) ([a34c14c](https://github.com/vymalo/another-agentic-system/commit/a34c14c4756da103c3bebddc626bf34a2881dadf))
+* **chart:** three database instances, resources and a transaction pooler (sys[#290](https://github.com/vymalo/another-agentic-system/issues/290), PR 2) ([#310](https://github.com/vymalo/another-agentic-system/issues/310)) ([26d9c17](https://github.com/vymalo/another-agentic-system/commit/26d9c17494696024bfeb2dd4482e314a4e36046c))
+* **dispatcher:** a fair share of the dispatcher for each person (ADR 0066) ([#306](https://github.com/vymalo/another-agentic-system/issues/306)) ([f3ea64f](https://github.com/vymalo/another-agentic-system/commit/f3ea64ff2daf13fefa19990b9313da4380351c7b))
+* **orchestrator:** database.directUrl, so a transaction pooler can carry the rest (sys[#290](https://github.com/vymalo/another-agentic-system/issues/290), PR 1) ([#309](https://github.com/vymalo/another-agentic-system/issues/309)) ([c777d29](https://github.com/vymalo/another-agentic-system/commit/c777d29bfb23f92a208e44180bd530efd0e178fa))
+* **usage:** a usage ledger per person, written in the commit of the event (ADR 0065, PR 1) ([#303](https://github.com/vymalo/another-agentic-system/issues/303)) ([0d50c42](https://github.com/vymalo/another-agentic-system/commit/0d50c4275edc86ee28b1f4c9bb4cf9d2cd730cfa))
+* **usage:** price a person's month and answer GET /api/me/usage, with a retention sweep (ADR 0065, PR 2) ([#305](https://github.com/vymalo/another-agentic-system/issues/305)) ([b97de39](https://github.com/vymalo/another-agentic-system/commit/b97de39811ef9a93dffb8ebd467cb0405ec88308))
+* **usage:** read and log the sandbox time a task reports in usage/v1 ([#302](https://github.com/vymalo/another-agentic-system/issues/302)) ([6fc8060](https://github.com/vymalo/another-agentic-system/commit/6fc80609f246b5c68f20950d54b4bfc8c492c219))
+* **web:** a My tool servers page for the MCP servers a person adds, with a client recipe in the contract (ADR 0046) ([#316](https://github.com/vymalo/another-agentic-system/issues/316)) ([716c260](https://github.com/vymalo/another-agentic-system/commit/716c260afa7047b043c173ddf2d810c9ebed6368))
+* **web:** a theme the person chooses, system, light or dark, set before the first paint ([#318](https://github.com/vymalo/another-agentic-system/issues/318)) ([b79132a](https://github.com/vymalo/another-agentic-system/commit/b79132aa9a4507e75a0c81791e16a7227a09f55d))
+* **web:** a usage page over GET /api/me/usage (ADR 0065) ([#312](https://github.com/vymalo/another-agentic-system/issues/312)) ([f63fde1](https://github.com/vymalo/another-agentic-system/commit/f63fde1492d879f1af00c5d4c4f9d15e432df518))
+* **web:** highlighted code and display math in answers, with a message-text contract for any client ([#314](https://github.com/vymalo/another-agentic-system/issues/314)) ([632384f](https://github.com/vymalo/another-agentic-system/commit/632384fb7f367d36d84eb4196951e638a0699503))
+* **web:** quote a message, copy it as Markdown, export a thread as Markdown ([#319](https://github.com/vymalo/another-agentic-system/issues/319)) ([2273c9b](https://github.com/vymalo/another-agentic-system/commit/2273c9be215b797d2a939a04a0c96d8680722add))
+* **web:** regenerate the last answer, with a client-neutral recipe in the API ([#313](https://github.com/vymalo/another-agentic-system/issues/313)) ([d5e48f5](https://github.com/vymalo/another-agentic-system/commit/d5e48f590f1519af5a48ab3b79d4e0806cc7148f))
+* **web:** search my chats from a box under New chat ([#323](https://github.com/vymalo/another-agentic-system/issues/323)) ([37600d7](https://github.com/vymalo/another-agentic-system/commit/37600d76a867cf09c08195f51e443fc825c31676))
+* **web:** the page "My prompts" (ADR 0070, slice P1) ([#325](https://github.com/vymalo/another-agentic-system/issues/325)) ([f367469](https://github.com/vymalo/another-agentic-system/commit/f367469b8ab5b1919c95aafc92ed48e2be4abd53))
+* **web:** UI catalog version 7 with confirm, number, scale, date and rank questions, and a contract with conformance vectors ([#317](https://github.com/vymalo/another-agentic-system/issues/317)) ([5ed8950](https://github.com/vymalo/another-agentic-system/commit/5ed8950f09383220cc1bca26c7798b0c7ea135c7))
+* **web:** UI catalog version 8: a question that shows what it asks about, and a plan ([#320](https://github.com/vymalo/another-agentic-system/issues/320)) ([d0a732f](https://github.com/vymalo/another-agentic-system/commit/d0a732f21d93485835d7287e9f09a25d2b4fb338))
+
+
+### Bug Fixes
+
+* **agui:** a surface sent again keeps only its live copy for replay; an asked agent's forms catalog has no show ([#321](https://github.com/vymalo/another-agentic-system/issues/321)) ([5cab8fc](https://github.com/vymalo/another-agentic-system/commit/5cab8fc8216921d0567e1d2bd65a9bdec8d48680))
+* **deps:** take the advisories of tokio, rustls-webpki, webpki-roots, ctutils and zip ([#300](https://github.com/vymalo/another-agentic-system/issues/300)) ([6224b9c](https://github.com/vymalo/another-agentic-system/commit/6224b9c82f56c28ef1cdd21f2220f454973c6d70))
+* **orchestrator:** arm SIGTERM before the address is bound, and make three test suites deterministic ([#304](https://github.com/vymalo/another-agentic-system/issues/304)) ([6739a06](https://github.com/vymalo/another-agentic-system/commit/6739a06ef286474024e38d049ca016e50ede8e62))
+
+
+### Documentation
+
+* **adr:** propose ADR 0067, the plan to LibreChat-grade and the client-agnostic rule ([#315](https://github.com/vymalo/another-agentic-system/issues/315)) ([60cb754](https://github.com/vymalo/another-agentic-system/commit/60cb75459d7226be729b8f25c605436bcd333593))
+* gVisor is back in milestone M1, and the goal rows are current ([#326](https://github.com/vymalo/another-agentic-system/issues/326)) ([3e3bf12](https://github.com/vymalo/another-agentic-system/commit/3e3bf128594583f3bea9c2d01d7b45d590fe262f))
+* payments, pricing and the market plan leave the public roadmap ([#327](https://github.com/vymalo/another-agentic-system/issues/327)) ([50650e6](https://github.com/vymalo/another-agentic-system/commit/50650e6fd1f01ed9b2727ab43bb3136b64cadaa0))
+* pgvector for embeddings and vector search, behind a port (ADR 0071) ([#329](https://github.com/vymalo/another-agentic-system/issues/329)) ([291379f](https://github.com/vymalo/another-agentic-system/commit/291379f1156776af3f996026c499fb1843931c9f))
+* relations beside the vectors, in two plain tables (ADR 0071 amended) ([#330](https://github.com/vymalo/another-agentic-system/issues/330)) ([cf33afa](https://github.com/vymalo/another-agentic-system/commit/cf33afa651c664606bbcaf902272b0524aa09e4e))
+* **roadmap:** adam-rs is 16 of 17, images in is merged ([#331](https://github.com/vymalo/another-agentic-system/issues/331)) ([661b7da](https://github.com/vymalo/another-agentic-system/commit/661b7da18287f290b20c181d7527f3f9c1ff4aed))
+* **roadmap:** say what M2 has built (usage ledger, sandbox time, fair share, edge limit) ([#308](https://github.com/vymalo/another-agentic-system/issues/308)) ([6b1d0f0](https://github.com/vymalo/another-agentic-system/commit/6b1d0f0fb1a7282a5f23e96d3cf8805a1564ad6a))
+* two sentences name no head count ([#328](https://github.com/vymalo/another-agentic-system/issues/328)) ([bd204d6](https://github.com/vymalo/another-agentic-system/commit/bd204d6d20fb6ed3772f7d1af33774d382705e9d))
+
+
+### Chores
+
+* **deploy:** bump orchestrator to sha-00a4a30 ([25f4baf](https://github.com/vymalo/another-agentic-system/commit/25f4bafa667e1d5561fa5e66441ea3cf5e26f368))
+* **deploy:** bump orchestrator to sha-0d50c42 ([795ebe8](https://github.com/vymalo/another-agentic-system/commit/795ebe8d6ca1bfa6f42f74ec185b8c9e83068d9a))
+* **deploy:** bump orchestrator to sha-2273c9b ([55bd07f](https://github.com/vymalo/another-agentic-system/commit/55bd07f69fb26f698e0544a6f0cbcc0e04a3ba3a))
+* **deploy:** bump orchestrator to sha-26d9c17 ([9afaad3](https://github.com/vymalo/another-agentic-system/commit/9afaad3258c098e09794d083a3f3f79821c5450c))
+* **deploy:** bump orchestrator to sha-5cab8fc ([794050e](https://github.com/vymalo/another-agentic-system/commit/794050e62079b75da13b6919b0dd0ba1338ec8f2))
+* **deploy:** bump orchestrator to sha-5ed8950 ([dbeeca1](https://github.com/vymalo/another-agentic-system/commit/dbeeca168c9debcd7371798945bf0c4dea5f5e29))
+* **deploy:** bump orchestrator to sha-6224b9c ([15cb544](https://github.com/vymalo/another-agentic-system/commit/15cb5447dc2bd42b3087be0c1bf2a6cb48762e99))
+* **deploy:** bump orchestrator to sha-6739a06 ([bbdbb4b](https://github.com/vymalo/another-agentic-system/commit/bbdbb4bfe6ad862fa54f26cd5f7ac2e5d4f19f03))
+* **deploy:** bump orchestrator to sha-6fc8060 ([61a9cd6](https://github.com/vymalo/another-agentic-system/commit/61a9cd665b316e3453304a2f3d874c453a70ea2a))
+* **deploy:** bump orchestrator to sha-716c260 ([cb3a7f9](https://github.com/vymalo/another-agentic-system/commit/cb3a7f9e7c45a9b76351cc286c61c954cd36332c))
+* **deploy:** bump orchestrator to sha-b97de39 ([ad2326f](https://github.com/vymalo/another-agentic-system/commit/ad2326f5508b61839f2f8994d1277d6437efd69d))
+* **deploy:** bump orchestrator to sha-bb4d722 ([438509a](https://github.com/vymalo/another-agentic-system/commit/438509a6d044593170b78115d943dafcc9f7e0d9))
+* **deploy:** bump orchestrator to sha-c777d29 ([ab49f87](https://github.com/vymalo/another-agentic-system/commit/ab49f877494a853af2efd4b217fbe23e0b0ef665))
+* **deploy:** bump orchestrator to sha-d0a732f ([a548f06](https://github.com/vymalo/another-agentic-system/commit/a548f0623b605e0a6a202ddb5ad1db3fcaee645e))
+* **deploy:** bump orchestrator to sha-d5e48f5 ([d416a96](https://github.com/vymalo/another-agentic-system/commit/d416a9601cb3f691b71d444f5364b27f99b40bdc))
+* **deploy:** bump orchestrator to sha-f3ea64f ([c03035c](https://github.com/vymalo/another-agentic-system/commit/c03035cedf5ccafd3160526636035302ea34ad2b))
+* **deploy:** bump web to sha-00a4a30 ([cd70908](https://github.com/vymalo/another-agentic-system/commit/cd70908f54bcd740fdf96906037cfd188a47adf3))
+* **deploy:** bump web to sha-2273c9b ([97876ff](https://github.com/vymalo/another-agentic-system/commit/97876ffbf81700a389da20ff39e3185d70859507))
+* **deploy:** bump web to sha-37600d7 ([d70436d](https://github.com/vymalo/another-agentic-system/commit/d70436d361317b0edb91be4ab04aa03f96e754ff))
+* **deploy:** bump web to sha-5cab8fc ([36a9abb](https://github.com/vymalo/another-agentic-system/commit/36a9abbc2a3c9c04e9fbab365a0f2017f6dae592))
+* **deploy:** bump web to sha-5ed8950 ([5b8f009](https://github.com/vymalo/another-agentic-system/commit/5b8f0090256c0017d0042d6e1c8a6d28990012fd))
+* **deploy:** bump web to sha-632384f ([542505c](https://github.com/vymalo/another-agentic-system/commit/542505cc975616f883d312e7cda6ce4b57493614))
+* **deploy:** bump web to sha-6fc8060 ([6b1ab65](https://github.com/vymalo/another-agentic-system/commit/6b1ab65c79f4367180ea5ad0aabf16212ee3eb3e))
+* **deploy:** bump web to sha-716c260 ([fafb16d](https://github.com/vymalo/another-agentic-system/commit/fafb16dd90b9a2bce78961f65949eff441349683))
+* **deploy:** bump web to sha-b79132a ([d278240](https://github.com/vymalo/another-agentic-system/commit/d278240cfdf03d3dc2f3f014897392260a273999))
+* **deploy:** bump web to sha-b97de39 ([e978437](https://github.com/vymalo/another-agentic-system/commit/e97843743226fe404c60262ec09c8624feb55e3b))
+* **deploy:** bump web to sha-bb4d722 ([f0a2745](https://github.com/vymalo/another-agentic-system/commit/f0a2745bff7c57d52143b289fcb3ec565fb656c7))
+* **deploy:** bump web to sha-d0a732f ([c860609](https://github.com/vymalo/another-agentic-system/commit/c860609c5a7862b46f91a86b7345b141b3b19e73))
+* **deploy:** bump web to sha-d5e48f5 ([59c5ce5](https://github.com/vymalo/another-agentic-system/commit/59c5ce53d8527c546c0003f7ae8493cdf4f7b82d))
+* **deploy:** bump web to sha-f367469 ([2527b34](https://github.com/vymalo/another-agentic-system/commit/2527b34d5ca52516b7accff4692892bce1515d4d))
+* **deploy:** bump web to sha-f63fde1 ([7578dfc](https://github.com/vymalo/another-agentic-system/commit/7578dfc907b01b5db21dc2b0a97c70c536275586))
+
 ## [0.7.1](https://github.com/vymalo/another-agentic-system/compare/v0.7.0...v0.7.1) (2026-10-19)
 
 
