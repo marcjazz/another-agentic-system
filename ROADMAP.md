@@ -32,6 +32,155 @@ blocks. They are not open source, and they left this roadmap on 2026-11-15: M3 k
 - **Nothing has been measured live.** No load test, no cost per person.
 - **There is no launch date.** The order below is the order of dependencies, not a schedule.
 
+## Releases, in order (proposed)
+
+*Proposed 2026-11-19 at the owner's request, and not yet agreed.* The milestones below say what launch needs. This
+section says what ships first, what each release must hold, and what waits. **The rules:** a new feature is started
+when it is on a release's list; work already started keeps going to its end, with no release gate. R1's build starts
+on the owner's go, and its decision records and designs may merge before. There are no dates; the order is the order
+of dependencies.
+
+```mermaid
+flowchart LR
+  R1["R1<br/>Chat in production"] --> R2["R2<br/>Agents on the person's computer"]
+  R2 --> R3["R3<br/>Agents in the cloud,<br/>safe for many people"]
+  R3 --> L(["Later"])
+```
+
+| Release | Its goal | Milestones it closes | First used by a real person? |
+|---|---|---|---|
+| **R1** | People sign in and chat on the web and the desktop; answers stream; history follows them across devices; usage is counted per person; several agents work together in one chat (agent-team) | M2's usage record is used; M4's backups; M5's "Delete my account" | **Yes:** the first release meant for people outside the maintainers |
+| **R2** | An adam agent runs on the person's own computer, inside a desktop application, in a folder the person chooses, asking before what it may not do | None. It closes the quality goal "a coder as good as OpenCode" | Yes |
+| **R3** | The same agent runs in the cloud, keeps working when the person's computer is closed, and is safe for many people at once | All of M1, the rest of M2, M4, the rest of M5 | Yes |
+
+### R1: chat in production
+
+The chat is built: the orchestrator, its chat API and AG-UI stream, and the `chat` agent served by `adam-agent`. R1 is
+what it lacks to run for real people, often behind a gateway of the deployment's own in front of the orchestrator, and
+one new feature: agent-team.
+
+| Must | Repo | Ticket | Done when |
+|---|---|---|---|
+| The chart runs the orchestrator without its own web and edge: `web` and `edge` can be turned off, and the network policy admits only the named peer in front of it | sys | new ticket | `deploy/chart/tests/render-check.sh` asserts both renders, each check broken on purpose |
+| A person's token forwarded by that peer is accepted by configuration of `auth.jwt` alone: `userClaim: sub` on a fresh deployment, the audiences, the roles claim | sys | none expected (configuration); a new ticket if a gap appears | a scenario where a stand-in peer forwards two people's tokens and each reads only their own threads |
+| **The credential broker's first part** ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) slice B1, depending on no hook): the broker as a service of this system with its store (a vault, OpenBao, or the broker's own sealed store for small and development deployments) and the lease contract; the orchestrator binds run, agent and person at the broker; an internal lease lookup, absent from the edge, that answers only when the caller is the agent the run is bound to. **The run id is not a secret and is never sufficient alone**; a leased value is scrubbed from every log | sys | sys#334 B1 (new ticket) | the broker's conformance suite over both stores; a lookup with a bound run id but another agent's identity is refused; the lookup is absent from the chart's ingress (`render-check.sh`); no leased value in any log |
+| **The injector: [Agent Router](https://github.com/theagentrouter/agent-router) with [Authorino](https://github.com/Kuadrant/authorino) in front** ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S9). Agent Router is the former Envoy AI Gateway (Apache-2.0; v1.3.0 is its latest stable release, *verified 2026-11-19* on its GitHub releases page), self-hosted and internal only, with TLS on the internal path from a cert-manager CA. Envoy Gateway's external authorization (gRPC) calls Authorino in front of its routes. Authorino authenticates the agent pod (its service-account token through TokenReview, or a client certificate), fetches the lease from the broker (never the vault directly) by `X-Run-Id` and the caller's identity, adds `Authorization` to the upstream request only, caches it per run for no longer than the lease, and strips any `Authorization` the client sent. Authorino's `metadata.http`, evaluator `cache` and `response.success.headers` are *verified 2026-11-19* in its documentation. **A spike comes first**: that the added header reaches the model endpoint through Agent Router's generated routes is *unverified* | sys | sys#334 S9 (new ticket, spike first) | a kind test: a call from the bound agent with its run id reaches a mock model endpoint with that run's bearer; the same run id from another service account is refused; a client-sent `Authorization` never reaches the endpoint; the agent trusts only the cert-manager CA on that path |
+| The system chart's `chat` and `browser` agents reach the model endpoint only through Agent Router (network policies) | sys | sys#334 S10 | `render-check.sh`; the scenario below |
+| **A model credential per run, held by no one but the vault.** The orchestrator tells the broker which person each run is for, through a new port with a testkit (a `static` adapter that is today's behaviour, and a `broker` adapter). No credential is in a message, the log, an export, a fork or a frame; the orchestrator's own model calls go through Agent Router too. ADR first | sys | new ticket | the port's conformance suite; a new `dev/` scenario whose mock model endpoint records the bearer of every call: each call carries the person's; no credential in any A2A message |
+| **The agent holds no model key** ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S8). Configured for it, adam sends every model call of a run, local subagents and child sessions included, to Agent Router, tagged with the run id (not a secret), with no key of its own; it fails closed: a refusal or an unreachable gateway parks the run, never a fallback to a deployment key | adam | sys#334 S8 (new ticket) | a scripted model behind a test gateway: every call carries the run id and arrives with the injected bearer; the agent's environment holds no key; the gateway down parks the run |
+| **Over the limit pauses, never fails.** When the model endpoint answers that the person is over their limit, the run parks with the reason `over-limit` instead of ending as an invalid request; the person's next message after the limit is lifted resumes the same run at the same step | adam | new ticket | a scripted model refuses, then answers: the run parks, then resumes with its journal unchanged |
+| The orchestrator shows the pause: a thread state and an AG-UI event with the typed reason; the dispatcher does not retry it on its own | sys | new ticket | the new `dev/` scenario: the thread shows the reason, a new message resumes |
+| The orchestrator's own model calls (thread titles, descriptions) go through Agent Router with the person's credential and are lines of their own in the person's usage | sys | [sys#338](https://github.com/vymalo/another-agentic-system/issues/338) slice 4 | `dev/usage-ledger-e2e.sh` extended |
+| A second client forks, edits and regenerates safely: a message's `seq` is a field of the API, and the server refuses a regenerate or an edit while a question waits and on a steered message | sys | [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) slices 1, 2 | the server tests; the web's mock contract test |
+| The chat contract cannot break silently: CI fails on an incompatible change to `docs/api/chat-api.yaml` or the AG-UI goldens without a version note | sys | new ticket | the check fails on a removed field in a test branch |
+| The `chat` and `browser` agents run a current adam (today's pin is of 2026-10-18), pinned by tag and digest | sys | new ticket (`bump-adam`) | `dev/agents-e2e.sh`, `dev/usage-e2e.sh` and `dev/child-sessions-e2e.sh` green on the new pin |
+| Delete my account | sys | [sys#294](https://github.com/vymalo/another-agentic-system/issues/294) | a `dev/` scenario; another person's data untouched |
+| Backups that restore: one restore of a live database into a new cluster returns a seeded thread | sys | [sys#151](https://github.com/vymalo/another-agentic-system/issues/151) | the restore drill's log on a real cluster |
+| **Agent-team** ([ADR 0074](https://github.com/vymalo/another-agentic-system/pull/378), proposed): several primary agents in one chat; hand-offs by `@name` with fan-out and fan-in, where a fanned-out member cannot hand off and its hand-off goes to the fan-in; at most 6 hand-offs per message of the person; every member reads the whole thread (`read_thread`); the person's approval asked by default for a hand-off and a risky action, by a gate in the orchestrator; declared checkpoints; the person interrupts at any time; saved presets, each person's own; the web UI | sys | [sys#377](https://github.com/vymalo/another-agentic-system/issues/377) | the epic's end-to-end: a fan-out to two mock agents and their fan-in, a fanned-out member's hand-off delivered to the fan-in, the seventh hand-off refused with a reason, a hand-off and a risky action waiting for the yes, a checkpoint, an interrupt, a preset reused by its owner and invisible to another person; the web's Playwright specs |
+| **A2UI v1.0, a hard cutover** ([ADR 0075](docs/decisions/0075-a2ui-v1-0-cutover.md), with [adam ADR 0056](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0056-a2ui-v1-0-only-a-hard-cutover.md); `ui-catalog/v2`): no dual support; old threads keep their v0.9.1 surfaces, shown as made by an earlier version, with actions on them refused; one merge per repository, adam-rs first | sys, adam | [sys#380](https://github.com/vymalo/another-agentic-system/issues/380) | the epic's proofs |
+
+**Exit criteria**, measured on a real deployment with a real model:
+
+1. For 7 days, the owner and at least 3 people outside the maintainers chat on it.
+2. No model call is made without a person's credential, in the model endpoint's own record, and no agent holds a model key.
+3. The person's usage record and the model endpoint's own record agree, call for call, 7 days running.
+4. A person over their limit sees the pause, and the same run continues once the limit is lifted.
+5. `dev/rbac-e2e.sh` passes against the deployment, and the restore drill has passed.
+6. The human tests [sys#202](https://github.com/vymalo/another-agentic-system/issues/202) and
+   [sys#205](https://github.com/vymalo/another-agentic-system/issues/205) pass on the deployment.
+7. The orchestrator adds at most 1 s at p95 between a message accepted and the agent's first model request.
+8. Agent-team's end-to-end is green, and one live hand-off between two agents, approved by a person, is recorded.
+9. The owner tries the chat and accepts it ([ADR 0037](docs/decisions/0037-the-mvp-is-complete-against-its-build-order.md)).
+
+**Not in R1:** sharing an agent-team preset by role (later); the coder in the cloud and all of M1 (R3); attachments (R2); memory (after R2); a person's own
+MCP servers and the other API gaps of [sys#336](https://github.com/vymalo/another-agentic-system/issues/336) (later);
+the limit check before dispatch, [sys#282](https://github.com/vymalo/another-agentic-system/issues/282) (R3); thread
+sharing (later); web search for the chat (later).
+
+### R2: agents on the person's computer
+
+adam is embedded in a desktop application as a library ([adam ADR 0047](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0047-adam-rs-can-be-embedded-in-an-application.md),
+accepted, not built). The application brings the model client.
+
+| Must | Repo | Ticket | Done when |
+|---|---|---|---|
+| The embedded feature set (ADR 0047 slice 1): no HTTP server or client, database driver, Kubernetes client, second TLS provider or MCP client in `adam-engine`'s tree | adam | new ticket | the dependency job fails on a planted crate |
+| `SecretSource` (slice 2): the engine's default refuses every name | adam | new ticket | the slice's test |
+| One SQLite store (slice 3) | adam | [sys#362](https://github.com/vymalo/another-agentic-system/issues/362) | `store_conformance!` on SQLite; a second process refused |
+| `adam-engine` and an example embedder (slice 4), with each model call's usage and the run's total in its events, so the application shows what a run used | adam | new ticket | a killed process resumes its run; a slow reader keeps memory bounded |
+| Approvals: hooks H1 and H8 ([adam ADR 0050](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0050-hooks-around-the-agent-loop-compiled-first-and-programs-second.md)) and ADR 0047 slice 5 over them; the access tiers decide what is asked | adam | [sys#333](https://github.com/vymalo/another-agentic-system/issues/333) slices 2, 12; new ticket for slice 5 | yes runs the same call once; a replay never asks twice |
+| The tools as a library (slice 6), the person's directory and a local agent (slice 7), the local sandbox (slice 9) | adam | new tickets | each slice's proof in ADR 0047 |
+| macOS (slice 8, the macOS half), on a self-hosted Mac runner | adam | new ticket | the same tests on that runner |
+| Attachments: files and images in a message, kept by hash in the artifact store, at most 10 MiB | sys | [sys#335](https://github.com/vymalo/another-agentic-system/issues/335) slice 10 | the slice's server and web tests |
+| **The orchestrator as a library** in an application, beside an in-process adam ([ADR 0076](docs/decisions/0076-the-orchestrator-as-a-library-in-an-application.md), merged (`e2ebb09`); epic [sys#382](https://github.com/vymalo/another-agentic-system/issues/382)): `orch-store-sqlite` with its testkits (E2); a library composition root and its dependency check (E3); `agent-local` revived, on adam's SQLite store (E4); a compile check of the embedded set for its targets (E5); a minimum application version, so a deployment can refuse an application too old for a hard cutover (E6). The move off `sqlx` (E1) may land earlier | sys | sys#382 E2 to E6 | each slice's proof in the epic; a killed example resumes its run on SQLite |
+| Over the limit pauses in the engine too (R1's adam change, reused) | adam | covered by R1 | an engine test with a scripted refusal |
+| The benchmark gate: the bench on the host's container runtime, then a smoke test on six of our own tasks, then the comparison of [sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 8 and the [ADR 0048](https://github.com/vymalo/another-adam-rs/blob/main/docs/decisions/0048-a-benchmark-harness-for-adam-coder-and-opencode.md) run | adam `bench/` | [sys#365](https://github.com/vymalo/another-agentic-system/issues/365), sys#345 slice 8 | the bench reports, with intervals |
+
+**Exit criteria:**
+
+1. The smoke test is green: adam solves at least as many of the six tasks as OpenCode with the shared prompt.
+2. The bench decides which coder is the default on a person's computer: adam is, if its pass rate is not below
+   OpenCode's beyond the bench's interval and its model cost per solved task is at most 1.25 times OpenCode's.
+3. The engine's suites are green on Linux and macOS: kill and resume, approve once across a crash, the sandbox's
+   refusal, the dependency check.
+4. A person outside the maintainers runs a local agent in a folder of their own, approves one command, kills the
+   application mid-run, sees the run resume, and reads what it used.
+
+**Not in R2:** the orchestrator on a phone (later); Windows (not planned); adam as an ACP agent (later); the other hooks and hook programs (no release gate, below); the store service of
+[adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) (R3, only if the load test asks for it); memory
+(after R2).
+
+### R3: agents in the cloud, safe for many people
+
+| Must | Repo | Ticket | Done when |
+|---|---|---|---|
+| All of [M1](#m1-a-coder-that-is-safe-for-many-people): ADR 0064 agreed, the person assertion and GitHub linking, the coder's access check, the chain on mocks, a mirror per person, the package cache, no model key in run pods (the per-run credential of R1 never reaches one), gVisor (K14b to K14d) | sys, adam, plat | [sys#278](https://github.com/vymalo/another-agentic-system/issues/278), [#279](https://github.com/vymalo/another-agentic-system/issues/279), [adam#121](https://github.com/vymalo/another-adam-rs/issues/121), [sys#280](https://github.com/vymalo/another-agentic-system/issues/280), [adam#122](https://github.com/vymalo/another-adam-rs/issues/122), [#123](https://github.com/vymalo/another-adam-rs/issues/123), [#119](https://github.com/vymalo/another-adam-rs/issues/119), [plat#54](https://github.com/vymalo/another-agentic-platform/issues/54) | M1's "Done when", true on a real cluster |
+| The first real agent on a real cluster (K13), and the operator's default agent image moved to a current coder (today's is of 2026-10-05) | plat | K13; new ticket for the image | the coder answers through the Platform API on a real cluster |
+| Sandbox time is limited before a run starts: `usage/v1` reports a run pod's size class with its seconds (a new ticket if it does not), and a run is refused before dispatch when the person is at their limit | adam, sys | [sys#282](https://github.com/vymalo/another-agentic-system/issues/282); new ticket for the size class | a `dev/` scenario: a person at the limit is refused before any pod starts |
+| All of [M4](#m4-scale-and-operations): three instances and the pooler on, the coder's database and pruning, the load test, capacity metrics and alerts | sys, adam | [sys#290](https://github.com/vymalo/another-agentic-system/issues/290), [adam#127](https://github.com/vymalo/another-adam-rs/issues/127), [sys#291](https://github.com/vymalo/another-agentic-system/issues/291), [sys#292](https://github.com/vymalo/another-agentic-system/issues/292) | the load test's report names the first bottleneck |
+| Abuse controls: CPU mining detected on run pods, a kill switch per person | sys | [sys#295](https://github.com/vymalo/another-agentic-system/issues/295) | a scripted miner is flagged; a switched-off person's runs stop |
+| A conversation keeps its repository checkouts between jobs | adam | [sys#341](https://github.com/vymalo/another-agentic-system/issues/341) slices 1 to 4 | a second job continues a dirty tree and says so |
+| A repository's own environment is a run pod of its image, and Podman is gone | adam, plat | [sys#368](https://github.com/vymalo/another-agentic-system/issues/368), [#370](https://github.com/vymalo/another-agentic-system/issues/370), [#371](https://github.com/vymalo/another-agentic-system/issues/371) | the proofs of [sys#359](https://github.com/vymalo/another-agentic-system/issues/359) |
+
+**Exit criteria:** M1's "Done when" holds on a real cluster; the load test reports its limit, and the cluster holds 200 runs
+at once until a measured number replaces it; a person starts a cloud run, closes their
+computer, and reads the result on another device; a person at their limit is refused before a pod starts.
+
+**Not in R3:** everything in the next table.
+
+### Work that keeps going, with no release gate
+
+An epic with at least one merged slice is finished, whatever release it serves, and merges as it is built; so are the two epics the owner exempted. It must not
+delay a release. An epic with only a decision record or a plan waits for its release.
+
+| Epic | Note |
+|---|---|
+| A subagent in the background, as a session ([sys#332](https://github.com/vymalo/another-agentic-system/issues/332)), with a child session's options ([adam ADR 0054](https://github.com/vymalo/another-adam-rs/pull/195)) | adam's slices 6c, 7 and 8; the system's S3 to S5 |
+| LibreChat-grade ([sys#335](https://github.com/vymalo/another-agentic-system/issues/335)), every slice | attachments are an R2 must |
+| The rest of the kagent-grade minimum ([sys#344](https://github.com/vymalo/another-agentic-system/issues/344)) | K13 and K14 are R3 musts; K12 waits for adam's approval hooks |
+| A faster coder ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345)) | its comparison is part of R2's benchmark gate |
+| Hooks around the agent loop ([sys#333](https://github.com/vymalo/another-agentic-system/issues/333)), hook programs included | H1 and H8 are also R2 musts |
+| The orchestrator off `sqlx`, onto tokio-postgres and a pool, a hard cutover, crate by crate ([sys#382](https://github.com/vymalo/another-agentic-system/issues/382) E1) | early cleanup before R2, the rest of the epic is R2 |
+| No Podman ([sys#359](https://github.com/vymalo/another-agentic-system/issues/359)), decided on 2026-11-19 | the store service of [adam ADR 0053](https://github.com/vymalo/another-adam-rs/pull/196) only if R3's load test names database connections as the first bottleneck; the bench uses SQLite |
+
+This repository's web and desktop app are the open-source
+project's clients and keep evolving.
+
+### Waits for a later release, or not planned
+
+| Work | Verdict | Why |
+|---|---|---|
+| Missions, then federation ([sys#342](https://github.com/vymalo/another-agentic-system/issues/342)) | After R3 | They need cloud agents, limits and ADR 0064 first |
+| Windows: browser frames, web and phone previews ([sys#339](https://github.com/vymalo/another-agentic-system/issues/339)) | After R3 | No release needs them |
+| The app factory ([ADR 0073](docs/decisions/0073-app-factory-board-and-model-selection.md)) | After R3, after memory and its refinement | Its agents need R3's coder in the cloud |
+| Memory, then its refinement ([sys#337](https://github.com/vymalo/another-agentic-system/issues/337)) | Memory after R2; refinement after R3 | Not needed to run R1 or R2 |
+| An agent asks the person for a credential ([sys#334](https://github.com/vymalo/another-agentic-system/issues/334) S1 to S7, S11, S12) | After hooks | The broker's first part and the injector are in R1 |
+| The API gaps 3 to 8 and the reference client ([sys#336](https://github.com/vymalo/another-agentic-system/issues/336)) | Later | A person's own MCP servers are not in R1 |
+| Diagrams as a UI catalog component ([sys#340](https://github.com/vymalo/another-agentic-system/issues/340)) | Not planned | Mermaid and charts exist; no release needs more |
+| Search by meaning ([sys#343](https://github.com/vymalo/another-agentic-system/issues/343)) | Not planned | Word search is built |
+| On-demand skills and MCP tools ([sys#345](https://github.com/vymalo/another-agentic-system/issues/345) slice 7) | Not planned, unless the owner decides otherwise | Measured: a few percent of a run's model tokens, and slower |
+| A folder agent in the coder chart; a settings file for adam | Not planned | The system chart and the operator run folders; the engine takes settings in code |
+
 ## Three quality goals, alongside the milestones
 
 On 2026-11-14 the owner set three goals that run beside M1 to M5 and are not launch milestones: a coder as good as
