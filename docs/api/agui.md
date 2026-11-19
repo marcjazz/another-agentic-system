@@ -65,6 +65,10 @@ stays in [`chat-api.yaml`](chat-api.yaml).
 > contract [`thread-tools-v1.md`](thread-tools-v1.md#ask_agent)): an agent the thread's agent asked with `ask_agent` is a
 > `SUBAGENT_STARTED` named after it, `sub-ask-<n>`, nested by `parentSubagentRunId` under the one that asked, with a
 > `vymalo.ask` activity; see [Asked agents as subagents](#asked-agents-as-subagents).
+> **Child sessions are subagents** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md),
+> slice S2e, contract [`child-sessions-v1.md`](child-sessions-v1.md)): a helper session the agent opened is a `SUBAGENT_STARTED` named
+> after the helper, `sub-session-<seq>`, with a `vymalo.session` card and the child thread named in its metadata; see
+> [Child sessions as subagents](#child-sessions-as-subagents).
 > Spec facts were *verified 2026-09-29* against the pages linked.
 
 > **Access tier** (2026-10-11, [ADR 0061](../decisions/0061-the-person-picks-an-access-tier-for-each-message-the-agent-keeps-to-it.md), contract
@@ -146,6 +150,7 @@ Every id is derived from the log, so every replica and every replay agrees.
 | activity `messageId` | `evt-<seq>`; for A2UI, `a2ui-<seq>` of the event that created the surface (the same id for every snapshot of that surface); for the gate, `check-<attempt>-<verification>-<source>` (one card per source in one verification of one attempt, replaced by its later snapshots; `verification` counts the agent's `completed` events under the gate, from 1) and `rework-<attempt>` (the attempt that starts; from job 2, `rework-j<job>-<attempt>`, so two jobs never mint the same id; job 1's ids are unchanged); `job-<job>` for the `vymalo.job` activity; `fork-<seq>` of the `thread_forked` event for the `vymalo.fork` activity. |
 | step activity `messageId` | `step-<seq>` of the first event of the step (the same id for every snapshot of the step; a step that starts again after its end is another run of it, with another seq). |
 | `subagentRunId` of a step | `sub-step-<seq>` of the same event, for a sub-agent step. |
+| session activity `messageId`, `subagentRunId` of a session | `session-<seq>` and `sub-session-<seq>`, the `seq` of the `child_session_opened`; the subagent that follows a later report is `sub-session-<seq>-<seq of that report>`, so no id is used twice in a run (the reference client refuses it). |
 | `subagentRunId` | `sub-<seq>` of the first agent event of the invocation; reused when a suspended invocation continues on the same A2A task. A rework opens the next attempt's invocation itself, as `sub-<seq of the rework>`. |
 | interrupt `id` | `int-<seq>` of the `agent_status` that asked for input. |
 | SSE `id:` | `<seq>` on the last frame produced for that log event, only when no text message **of the log** is open. A live message is not in the log and does not hold it back; a live frame never has one. |
@@ -186,7 +191,10 @@ gets everything.
 | `agent_status{completed}` | The job is under a gate ([Verification](#verification-the-gate)) and the agent pushed, or tried to push, or is being reworked | The status words, if any → status activity → `SUBAGENT_FINISHED{}` → `STATE_SNAPSHOT{thread.state:"verifying", job}`. **Not** `RUN_FINISHED`: the run stays open and no `thread_state` follows |
 | `agent_status{completed}` | The job is under a gate and the agent pushed nothing (and no earlier attempt of the job pushed a commit): **an answer**, not work to verify, whatever `checks` it reported ([ADR 0018](../decisions/0018-verification-gate-and-rework-loop.md#status-note-2026-10-07-pushed-work-is-verified-in-every-attempt-and-a-failure-on-the-base-is-a-note), 2026-10-04 and 2026-10-07) | The status words, if any → status activity → `SUBAGENT_FINISHED{}`; **no** `verifying` snapshot and no `vymalo.check`: the `thread_state{done}` that follows is `STATE_SNAPSHOT{done, job}` → `RUN_FINISHED` success |
 | `tools_attached{servers}`, `tools_detached{servers}` (ADR 0024) | A person attached MCP servers to the thread, or detached some (`putThreadTools`, or the run that created the thread); a fork that cannot keep a server its agent may not use detaches it; in any state | The set of attached servers is part of every `STATE_SNAPSHOT` (`thread.tools`, the ids, sorted, absent when there are none), so the event is said as one **and as a card**. **Inside a run**: `STATE_SNAPSHOT` with the new set, then `ACTIVITY_SNAPSHOT{messageId:"evt-<seq>", activityType:"vymalo.tools", content:{attached?, detached?, at}}` (the ids that came or went; the creation commit's event comes right after the first message, inside the run it opened). **Outside any run**, with the thread finished or waiting: a producer-initiated run of its own, `RUN_STARTED{runId:"run-<seq>"}` → the card → `STATE_SNAPSHOT` → the run's close by the state the thread is in (as for a title), which a client with nothing else to show for it drops (the web does). **Outside a run with the thread active**: the run opens, as for any event of an active thread. Only ids: no name, URL or credential. See [Attaching MCP servers](#attaching-mcp-servers) |
-| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}` |
+| `job_started{job}` (ADR 0020) | Right after the `user_message` that starts job *n+1* on a finished thread (or alone, for a redelivered message: then it opens a producer-initiated run, `run-<seq>`) | The projection forgets the finished job: the attempt goes back to 1, the pushed commit is dropped, the thread's A2UI surfaces are dropped (an action on an old card is a 422), the verifier and checks flags are reset. `ACTIVITY_SNAPSHOT{messageId:"job-<job>", activityType:"vymalo.job", content:{job, round?, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"queued", thread.jobNumber, job.number, job.attempt:1}`. On a **child thread** (ADR 0072) the event carries `round: {number, by?}`, the round of the session the job follows (job 1 for the first round, which has no message), and the card says it as `content.round`: nothing else about the job changes |
+| `child_session_opened{session, thread, agent, description, keepOpen, by?, round?}` (ADR 0072) | The agent opened a helper session. A run is opened for it if none is, and the agent's invocation is **not**: a session event never opens or reopens one. One the projection holds already says nothing again | See [Child sessions as subagents](#child-sessions-as-subagents): `SUBAGENT_STARTED{subagentRunId:"sub-session-<seq>", name:<the helper>, description, parentSubagentRunId:<the open invocation, when there is one>, metadata:{"vymalo.actor", "vymalo.at", "vymalo.childThread", "vymalo.session"}}` → `ACTIVITY_SNAPSHOT{messageId:"session-<seq>", activityType:"vymalo.session", replace:true, content:{session, threadId, agent, description, keepOpen, state:"working" (`"idle"` when the event names no round), round?, at}}`. The thread's state does not move |
+| `child_session_reported{session, thread, round, report}` (ADR 0072) | A round of a session ended: `done`, `failed`, `canceled` or `blocked`. The core says a round again when it was `blocked` and ends otherwise, so a round may be reported twice | The card again (`round`, `report`; `state:"working"` for `blocked`, which waits for the person, else `"idle"`), then the end of the subagent: `SUBAGENT_FINISHED{result:{round, report}}` for `done` and `canceled`, `SUBAGENT_FINISHED{outcome:suspended, result}` for `blocked`, `SUBAGENT_ERROR{code:"session_failed"}` for `failed`. When the subagent is already ended it is started again first (`SUBAGENT_STARTED`, a new id) and the card follows. With no run open the event is a producer-initiated run of its own. Said when the round is newer than the last said or says another outcome of it; the same again, an earlier round and a session the log never opened say nothing |
+| `child_session_closed{session, thread}` (ADR 0072) | The session was closed, once | The card again with `state:"closed"` (the last `round` and `report` stay), then `SUBAGENT_FINISHED{result:{state:"closed"}}` if the subagent is still open |
 | `thread_forked{from:{threadId, seq}, kind, title, description?, target}` (ADR 0029) | Where the copy of the parent's events ends: the events before it are the parent's and say what they said. In any state of the projection | A run the copy left open (a cut before a message sent mid-run) is closed as `thread_state{cancelled}` closes one: `SUBAGENT_FINISHED{result:{status:"canceled"}}` → `STATE_SNAPSHOT` → `RUN_FINISHED{outcome:{type:"cancelled"}}`. The projection forgets the finished job as `job_started` does (the interrupt, the A2UI surfaces, the steps, the attempt, the pushed commit) **and the UI catalog**, which the fork's agent was never sent. Then a producer-initiated run: `RUN_STARTED{runId:"run-<seq>"}` → `ACTIVITY_SNAPSHOT{messageId:"fork-<seq>", activityType:"vymalo.fork", content:{from, kind, title, target, at}, metadata:{"vymalo.actor"}}` → `STATE_SNAPSHOT{thread.state:"done", thread.title:<the parent's, as it was>, thread.description:<the parent's, when it had one>, thread.forkedFrom}` → `RUN_FINISHED{outcome:{type:"success"}}`. See [Forks](#forks) |
 | `check_result{source, attempt, status, commit?, summary?, findings?, stale?}` (ADR 0018) | — | `ACTIVITY_SNAPSHOT{messageId:"check-<attempt>-<verification>-<source>", activityType:"vymalo.check", replace:true, content:{the event's data}}`, no `subagentRunId` (the orchestrator's, not the agent's). A `stale` answer (for a verification that is no longer the current one) is its own card, `evt-<seq>`, and changes nothing else |
 | `check_result{source:"verifier", status:"pending"}` (ADR 0018) | The verifier is asked: right after the `completed` that started the verification | `SUBAGENT_STARTED{subagentRunId:"sub-verify-<verification>", name:<the verifier's agent id>}` (attributed to the verifier, `metadata["vymalo.actor"]` an agent actor) → the `vymalo.check` snapshot above (pending) |
@@ -926,6 +934,102 @@ The golden [`ask-agent`](examples/agui/ask-agent.agui.json) is this section as a
 agent's invocation `sub-2`, `sub-ask-2` (`researcher`, the ask `coder` made) under `sub-ask-1`, which **ends first**, both
 `completed`, and `sub-ask-3` (`researcher` again) that ends in `SUBAGENT_ERROR ask_failed`. The reference client reads it in
 CI and its `expected/ask-agent.json` records the subagent each one runs in.
+
+## Child sessions as subagents
+
+**Built** (2026-11-19, [ADR 0072](../decisions/0072-child-sessions-are-nested-threads-followed-through-child-sessions-v1.md), slice S2e;
+no released agent serves it yet, see [`child-sessions-v1.md`](child-sessions-v1.md)). A helper the agent runs as a **session** has a
+thread of its own (the child) and, in the parent's stream, a **subagent** named after the helper and a `vymalo.session` card. The
+child's log is the child thread's stream, which is read like any thread's.
+
+```mermaid
+sequenceDiagram
+  participant A as Parent agent (A2A)
+  participant O as Orchestrator
+  participant U as AG-UI consumer
+  A-->>O: a session is opened (child-sessions/v1)
+  O-->>U: SUBAGENT_STARTED sub-session-3 helper (parent sub-2), ACTIVITY_SNAPSHOT vymalo.session session-3 (working)
+  A-->>O: round 1 ended: blocked
+  O-->>U: the card (working, blocked), SUBAGENT_FINISHED sub-session-3 (suspended)
+  A-->>O: round 1 ended: done
+  O-->>U: SUBAGENT_STARTED sub-session-3-5, the card (idle, done), SUBAGENT_FINISHED sub-session-3-5
+  A-->>O: round 2 ended: failed
+  O-->>U: SUBAGENT_STARTED sub-session-3-6, the card, SUBAGENT_ERROR sub-session-3-6 (session_failed)
+  A-->>O: the session was closed
+  O-->>U: ACTIVITY_SNAPSHOT vymalo.session session-3 (closed)
+```
+
+Two lifecycles, the card's and the subagent's. **The card** (`state`) is `working` while a round runs or waits for the person,
+`idle` when a round ended and none runs, and `closed`; it never goes back from `closed`.
+
+```mermaid
+stateDiagram-v2
+  [*] --> working: child_session_opened with a round
+  [*] --> idle: child_session_opened with none
+  working --> idle: reported done, failed or canceled
+  working --> working: reported blocked
+  idle --> working: reported blocked
+  working --> closed: child_session_closed
+  idle --> closed: child_session_closed
+  closed --> [*]
+```
+
+**The subagent** is open from a start to its end, and a session has one per report that follows an end.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Open: child_session_opened (SUBAGENT_STARTED)
+  Open --> Finished: reported done or canceled, or closed
+  Open --> Failed: reported failed (SUBAGENT_ERROR session_failed)
+  Open --> Suspended: reported blocked, or the invocation or the run ends (SUBAGENT_FINISHED, outcome suspended)
+  Finished --> Open: a later report (SUBAGENT_STARTED, a new id)
+  Failed --> Open: a later report
+  Suspended --> Open: a later report
+  Suspended --> Closed: child_session_closed (the card only)
+  Finished --> Closed: child_session_closed (the card only)
+  Failed --> Closed: child_session_closed (the card only)
+  Closed --> [*]
+```
+
+- **Ids.** The first subagent is `sub-session-<seq>`, `seq` of the `child_session_opened`; each one started by a later report is
+  `sub-session-<seq>-<seq of that report>`, whatever the round and whether or not the run is the same, so an id is never used
+  twice in a run (the reference client refuses it). The card is `session-<seq>`, said again with `replace: true` at every event of
+  the session. The subagent's `name` is the helper's and its `description` the words the session was started with.
+- **Metadata of `SUBAGENT_STARTED`.** `vymalo.actor` and `vymalo.at` as every attributed event, `vymalo.childThread` the child
+  thread's id (a UUID: what a screen opens, `GET /api/threads/{id}`) and `vymalo.session` the agent's own id of the session.
+- **Nesting.** `parentSubagentRunId` is the agent's invocation **when one is open** at the event, and absent when none is: a
+  session event never opens, reopens or names an invocation, so a thread that finished, failed or was cancelled gets no agent turn
+  for a late report, and a rework's invocation keeps its own id. The card is not attributed to a subagent: it outlives the round.
+- **What the card says.** `{session, threadId, agent, description, keepOpen, state, round?, report?, at}`; `round` is the newest
+  round the log names and `report` how it ended (`done`, `failed`, `canceled`, `blocked`). `agent` and `description` are an
+  agent's words and **untrusted**: the screen renders them as text.
+- **Blocked is not the end.** A `blocked` round waits for the person: the card says `working` and `blocked`, and the subagent
+  ends as **suspended**, which a screen draws as waiting. When the same round goes on and ends otherwise the core reports it again,
+  and that report starts a subagent of its own.
+- **Failed is an error.** `SUBAGENT_ERROR{code:"session_failed"}`; the card says which round.
+- **A round that outlives its invocation.** A helper may go on after the agent's task ended. The subagents under the invocation end
+  with it (`SUBAGENT_FINISHED`, outcome `suspended`, **not** canceled: the work goes on) and those that started with no invocation
+  end when the run does; the card keeps saying what it said. The report arrives later, with the thread finished, as a run of its own
+  (`run-<seq>`) that holds the subagent, the card and the end, and closes as the thread's state closes a run.
+- **Said once.** A session the log opened already, a report that says what the last said, a report of an earlier round, and a
+  close already said change nothing, and say nothing: no frame and so no resume point. A report or a close of a session the
+  projection never saw opened (a log held from the middle) says nothing either.
+- **A client that joins** while a round runs gets its `SUBAGENT_STARTED` in the preamble, after the invocation's, the steps' and the
+  asks'.
+- **A fork** copies the events and so the cards; at `thread_forked` the open run ends as a cancelled one (with the sessions'
+  subagents suspended) and every card the fork copied that was not closed is said again as `closed` in the fork's own run, since a
+  fork has no session of its own and no later report can come for it.
+- **Not in the state.** `STATE_SNAPSHOT.thread` does not say that a thread is a child (`childOf`): that is slice S4.
+- **`PROJECTION_VERSION` stays.** No released agent serves `child-sessions/v1`, so no log holds a session event, and no frame
+  of an event that exists changes (a session event changes none of another event's: `tests/sessions.rs`).
+
+The child's own stream is an ordinary one, with one difference: its `job_started` names the round it follows (`vymalo.job` with
+`round: {number, by?}`, job 1 for the first round, which no message started). The goldens are hand-written logs, in
+`docs/api/examples/` with the others (no real agent can produce a session yet), and part of every suite that runs on the goldens:
+[`sessions`](examples/agui/sessions.agui.json) (two sessions under a sub-agent step: a blocked round that ends done, a kept-open
+session with rounds done and canceled, a close, a report after the agent finished and a late close),
+[`sessions-failed`](examples/agui/sessions-failed.agui.json) (a failed round, `session_failed`) and
+[`sessions-child`](examples/agui/sessions-child.agui.json) (the child's log, two rounds). The reference client reads them in CI.
 
 ## Token usage
 
@@ -1943,7 +2047,17 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
       "required": ["job", "at"],
       "additionalProperties": false,
       "properties": {
-        "job": { "type": "integer", "minimum": 2 },
+        "job": { "type": "integer", "minimum": 1, "description": "From 2; 1 for the first round of a child thread (ADR 0072)" },
+        "round": {
+          "type": "object",
+          "required": ["number"],
+          "additionalProperties": false,
+          "description": "On a child thread: the round of its session the job follows (ADR 0072)",
+          "properties": {
+            "number": { "type": "integer", "minimum": 1 },
+            "by": { "enum": ["agent", "person"], "description": "Who started the round, when the agent said" }
+          }
+        },
         "at": { "$ref": "#/$defs/at" }
       }
     },
@@ -1990,6 +2104,23 @@ own, as the spec asks of vendor keys. A client that knows none of them still see
         "at": { "$ref": "#/$defs/at" }
       }
     },
+    "vymalo.session": {
+      "type": "object",
+      "required": ["session", "threadId", "agent", "description", "keepOpen", "state", "at"],
+      "additionalProperties": false,
+      "description": "A child session the agent opened (ADR 0072): the activity's id is session-<seq> of the child_session_opened, said again with replace at every event of the session. agent and description are an agent's words, untrusted",
+      "properties": {
+        "session": { "type": "string", "minLength": 1, "maxLength": 128, "description": "The session's id, the agent's own" },
+        "threadId": { "type": "string", "format": "uuid", "description": "The child thread that holds the session's log" },
+        "agent": { "type": "string", "description": "The helper's name" },
+        "description": { "type": "string", "description": "What the helper was asked to do" },
+        "keepOpen": { "type": "boolean", "description": "Whether the session goes idle after a round instead of closing" },
+        "state": { "enum": ["working", "idle", "closed"] },
+        "round": { "type": "integer", "minimum": 1, "description": "The newest round the log names" },
+        "report": { "enum": ["done", "failed", "canceled", "blocked"], "description": "How that round ended; absent while it runs" },
+        "at": { "$ref": "#/$defs/at" }
+      }
+    },
     "vymalo.tools": {
       "type": "object",
       "required": ["at"],
@@ -2016,6 +2147,7 @@ as sent by the agent, all the operations of one surface so far, and the snapshot
 | Where | Key | Shape |
 |---|---|---|
 | Any attributed event (`TEXT_MESSAGE_START`, `ACTIVITY_SNAPSHOT`, `SUBAGENT_STARTED`) | `metadata["vymalo.actor"]` | `{type: "user" \| "agent" \| "system", name, revision?}`; `revision` is the ADR 0008 echo |
+| A session's `SUBAGENT_STARTED` (ADR 0072) | `metadata["vymalo.childThread"]`, `metadata["vymalo.session"]` | The child thread's id (a UUID) and the agent's id of the session, beside `vymalo.actor` and `vymalo.at`. [Child sessions as subagents](#child-sessions-as-subagents) |
 | `RUN_ERROR` | `metadata["vymalo.problem"]` | `{type, title, detail?}` |
 | `CUSTOM` `vymalo.usage` (ADR 0056) | `value` | `{job, agent, task, call, path, provider?, model, inputTokens, outputTokens, totalTokens, reasoningTokens?, cachedInputTokens?, cacheWriteInputTokens?, contextWindow?, by: {kind: "agent" \| "subagent" \| "ask", name}, at}`. [Token usage](#token-usage) |
 | `CUSTOM` `vymalo.usage_total` (ADR 0056) | `value` | `{job, agent, task, path?, totals: [TokenUsage], sandbox?: {environment: "kubernetes" \| "local" \| "devcontainer", usage?: [{cpuMillis?, memoryBytes?, commands, milliseconds}]}, by, at}` |
