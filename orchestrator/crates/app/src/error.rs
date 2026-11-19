@@ -65,7 +65,8 @@ pub enum AppError {
     Unprocessable(String),
     /// A change of how the person's list shows a thread that cannot be made (ADR 0042): well
     /// formed, and what it names is in the way. `code` is the stable name a client acts on
-    /// (`bad_anchor`, `nested_row`).
+    /// (`bad_anchor`, `nested_row`), and `child_thread` for the thread of a helper session that
+    /// is neither forked, shared nor written to (ADR 0072).
     #[error("{detail}")]
     Arrangement {
         /// The stable name.
@@ -155,12 +156,21 @@ impl AppError {
             "nested_row" => {
                 "a thread nested under another cannot be pinned or placed; eject it from its parent first"
             }
+            "child_thread" => {
+                "the thread of a helper session cannot be forked, shared or written to; use the thread it belongs to"
+            }
             _ => "this arrangement cannot be made",
         };
         AppError::Arrangement {
             code,
             detail: detail.to_owned(),
         }
+    }
+
+    /// The thread of a helper session (a child, ADR 0072) cannot be forked, shared or written to (a
+    /// message, a steer, a Stop & send or an action; S3 opens them): 422 `child_thread`.
+    pub fn child_thread() -> Self {
+        AppError::arrangement("child_thread")
     }
 
     /// A broken application invariant.

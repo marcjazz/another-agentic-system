@@ -595,7 +595,8 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
         vec![Command::Observe {
             session: "s1".into(),
             round: 1,
-            task_id: "t1".into()
+            task_id: "t1".into(),
+            by: Some(SessionBy::Agent)
         }]
     );
     assert_eq!(
@@ -608,6 +609,7 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
             closing: false,
             followed: 1,
             started: 0,
+            refollow: false,
         })
     );
     // the model is never asked to title or describe it
@@ -617,12 +619,130 @@ fn a_child_thread_starts_queued_with_no_event_and_follows_its_round() {
 }
 
 #[test]
-fn a_child_with_no_round_to_follow_orders_nothing() {
+fn a_child_with_no_round_to_follow_orders_nothing_and_is_at_rest() {
     for round in [None, Some(round(1, None, None))] {
-        let (snap, cmds) = start_child(&report("s1", SessionState::Idle, round));
-        assert!(cmds.is_empty());
-        assert_eq!(snap.job.child.unwrap().followed, 0);
+        for state in [
+            SessionState::Idle,
+            SessionState::Closed,
+            SessionState::Working,
+        ] {
+            let (snap, cmds) = start_child(&report("s1", state, round.clone()));
+            assert!(cmds.is_empty());
+            // not `queued`: nothing would ever start it, and a person could not delete it
+            assert_eq!(snap.state, Done, "{state:?}");
+            assert!(deletable(snap.state, &snap.job).is_ok());
+            assert_eq!(snap.job.child.unwrap().followed, 0);
+        }
     }
+}
+
+#[test]
+fn a_child_at_rest_starts_its_first_round_as_job_one() {
+    let (snap, _) = start_child(&report("s1", SessionState::Idle, None));
+    let (next, cmds) = started(&snap, 1, None).unwrap();
+    assert_eq!((next.state, next.job.number), (Working, 1));
+    assert_eq!(cmds.len(), 1);
+}
+
+#[test]
+fn a_blocked_round_answered_in_the_same_task_is_followed_and_reported_again() {
+    use AgentTaskState as T;
+    let blocked = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::InputRequired))),
+    );
+    let working = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::Working))),
+    );
+    let done = report(
+        "s1",
+        SessionState::Idle,
+        Some(round(1, Some("t1"), Some(T::Completed))),
+    );
+    // the parent: reported blocked once, then done once, never a (round, outcome) twice
+    let mut parent = snapshot(Working);
+    let mut seen = Vec::new();
+    for r in [
+        &blocked, &blocked, &working, &blocked, &done, &done, &blocked,
+    ] {
+        let (next, events) = tell(&parent, r, child_id(1)).unwrap();
+        parent = next;
+        seen.extend(events.into_iter().filter_map(|e| match e {
+            EventBody::ChildSessionReported(d) => Some((d.round, d.report)),
+            _ => None,
+        }));
+    }
+    assert_eq!(
+        seen,
+        [(1, SessionOutcome::Blocked), (1, SessionOutcome::Done)]
+    );
+    // the child: blocked on round 1, told it goes on, follows the same task once
+    let (mut child, _) = start_child(&blocked);
+    child.state = Blocked;
+    child.job.observed = Some(ObservedRound {
+        number: 1,
+        task_id: "t1".into(),
+        by: None,
+    });
+    let (child, cmds) = transition(&child, &Input::ChildSessionSaid(working.clone())).unwrap();
+    assert_eq!(
+        cmds,
+        vec![Command::Observe {
+            session: "s1".into(),
+            round: 1,
+            task_id: "t1".into(),
+            by: Some(SessionBy::Agent)
+        }]
+    );
+    // told again before it resumes: not ordered twice
+    let (child, cmds) = transition(&child, &Input::ChildSessionSaid(working.clone())).unwrap();
+    assert!(cmds.is_empty());
+    // a blocked round is not re-followed from a report that says it is still blocked
+    let (_, cmds) = transition(&child, &Input::ChildSessionSaid(blocked)).unwrap();
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn a_blocked_round_that_is_submitted_again_is_followed_again_once() {
+    use AgentTaskState as T;
+    let blocked = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::InputRequired))),
+    );
+    let (mut child, _) = start_child(&blocked);
+    child.state = Blocked;
+    child.job.observed = Some(ObservedRound {
+        number: 1,
+        task_id: "t1".into(),
+        by: None,
+    });
+    let submitted = report(
+        "s1",
+        SessionState::Working,
+        Some(round(1, Some("t1"), Some(T::Submitted))),
+    );
+    let (child, cmds) = transition(&child, &Input::ChildSessionSaid(submitted.clone())).unwrap();
+    assert_eq!(cmds.len(), 1, "{cmds:?}");
+    let (_, cmds) = transition(&child, &Input::ChildSessionSaid(submitted)).unwrap();
+    assert!(cmds.is_empty(), "once: {cmds:?}");
+}
+
+#[test]
+fn a_child_that_started_a_round_never_starts_another_in_place() {
+    // a thread whose job 1 holds no round but which has started one before is not fresh: the next
+    // round is job 2, never job 1 again
+    let (mut snap, _) = start_child(&report("s1", SessionState::Idle, None));
+    snap.job.child.as_mut().unwrap().started = 1;
+    assert_eq!(
+        (snap.state, snap.job.number, snap.job.observed.is_none()),
+        (Done, 1, true)
+    );
+    let (next, _) = started(&snap, 2, None).unwrap();
+    assert_eq!(next.job.number, 2);
 }
 
 #[test]
@@ -682,7 +802,8 @@ fn a_child_is_told_of_a_new_round_once() {
         vec![Command::Observe {
             session: "s1".into(),
             round: 2,
-            task_id: "t2".into()
+            task_id: "t2".into(),
+            by: Some(SessionBy::Agent)
         }]
     );
     let (snap, cmds) = said(&snap, two);
@@ -830,6 +951,7 @@ fn a_round_starts_in_every_state() {
     }
     let mut busy = fresh.clone();
     busy.job = busy.job.next();
+    busy.state = Queued;
     let err = started(&busy, 2, None).unwrap_err();
     assert!(matches!(err, TransitionError::InvalidInState { .. }));
 }
@@ -897,6 +1019,60 @@ fn the_child_of_names_its_parent_and_session() {
     assert_eq!(
         serde_json::to_value(&of).unwrap(),
         serde_json::json!({"thread": child_id(1).to_string(), "session": "s1"})
+    );
+}
+
+#[test]
+fn a_child_thread_says_its_parent_its_session_and_what_the_helper_is() {
+    let (child, _) = start_child(&report(
+        "s1",
+        SessionState::Idle,
+        Some(round(1, Some("t-1"), Some(AgentTaskState::Working))),
+    ));
+    let mut record = ThreadRecord {
+        id: child_id(2),
+        owner: UserId::new("a@b.c"),
+        title: "Plan the migration".into(),
+        description: None,
+        target: AgentTarget {
+            agent_id: AgentId::new("coder"),
+            release: None,
+        },
+        state: child.state,
+        job: child.job,
+        version: 1,
+        forked_from: None,
+        share: None,
+        pinned_at: None,
+        archived_at: None,
+        rail_parent: Some(child_id(1)),
+        child_of: Some(ChildOf {
+            thread: child_id(1),
+            session: "s1".into(),
+        }),
+        rail_rank: "i".to_owned(),
+        last_seq: 0,
+        created_at: "2026-11-18T10:00:00Z".parse().unwrap(),
+        updated_at: "2026-11-18T10:00:00Z".parse().unwrap(),
+    };
+    let wire = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        wire["childOf"],
+        serde_json::json!({
+            "threadId": child_id(1).to_string(),
+            "session": "s1",
+            "agent": "planner",
+            "state": "idle"
+        })
+    );
+    assert_eq!(wire["nestedUnder"], child_id(1).to_string());
+    // a thread that is no child says nothing of it
+    record.child_of = None;
+    assert!(
+        serde_json::to_value(&record)
+            .unwrap()
+            .get("childOf")
+            .is_none()
     );
 }
 
@@ -1140,7 +1316,8 @@ fn run(reports: &[SessionReport]) -> (Snapshot, Vec<EventBody>) {
 
 proptest! {
     /// However the reports come, in whatever order and however often, a session is opened once,
-    /// closed once, and its rounds are reported in strictly increasing order, once each.
+    /// closed once, and its rounds are reported in increasing order, each (round, outcome) once (a
+    /// round that was blocked is reported again when it ends otherwise).
     #[test]
     fn the_parents_events_are_once_each(reports in proptest::collection::vec(arb_report(), 0..24), repeat in 1usize..4) {
         let (_, once) = run(&reports);
@@ -1152,6 +1329,7 @@ proptest! {
             let mut opened = 0;
             let mut closed = 0;
             let mut last = 0;
+            let mut told = std::collections::HashSet::new();
             for event in &once {
                 match event {
                     EventBody::ChildSessionOpened(d) if d.session == session => opened += 1,
@@ -1161,7 +1339,8 @@ proptest! {
                     }
                     EventBody::ChildSessionReported(d) if d.session == session => {
                         prop_assert!(opened == 1, "reported before opened");
-                        prop_assert!(d.round > last, "rounds are reported in increasing order");
+                        prop_assert!(d.round >= last, "rounds are reported in increasing order");
+                        prop_assert!(told.insert((d.round, d.report)), "a (round, outcome) twice");
                         last = d.round;
                     }
                     _ => {}
@@ -1347,6 +1526,7 @@ fn the_child_ledger_is_written_and_read_back_whole() {
         closing: false,
         followed: 0,
         started: 0,
+        refollow: false,
     };
     let v = serde_json::to_value(&ledger).unwrap();
     assert!(
