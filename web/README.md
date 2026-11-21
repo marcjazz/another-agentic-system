@@ -2380,12 +2380,14 @@ stateDiagram-v2
 
 **Why the app renames the activity.** `@assistant-ui/react-ag-ui` has an A2UI path of its own (an
 `a2ui-surface` becomes a `present` tool part). It converts the surface in the run aggregator the moment
-it arrives, so no host check can come first; it drops operations that say `v0.9.1`, the version our
-orchestrator relays; and it has no `openUrl`. `ThreadAgent` therefore hands every `a2ui-surface` to the
-runtime as the activity `vymalo.a2ui-surface` (an ordinary data part, drawn by `data-uis.tsx`), with the
-content untouched plus the actor and the surface id. Nothing converts before the validator has run.
-The library's own pure pieces are used after it: `applyA2uiOperations` (reducer),
-`convertSurfaceToUISpec` and `renderGenerativeUI`.
+it arrives, so no host check can come first; it drops operations that say `v0.9.1` (the version this
+system relayed before the cutover); and it has no `openUrl`. `ThreadAgent` therefore hands every
+`a2ui-surface` to the runtime as the activity `vymalo.a2ui-surface` (an ordinary data part, drawn by
+`data-uis.tsx`), with the content untouched plus the actor and the surface id. Nothing converts before
+the validator has run. The library's own pure pieces are used after it: `convertSurfaceToUISpec` and
+`renderGenerativeUI`. **The reducer is the web's own** (`src/features/chat/lib/a2ui/reducer.ts`): the
+package's takes `v0.9`, `v0.9.1` and the draft `v1.0` and no release takes `1.0`, so the app applies
+A2UI 1.0's four operations itself (ADR 0075, amended 2026-11-20).
 
 *Verified 2026-09-29* (read from the installed `@assistant-ui/react-generative-ui` 0.0.21 and
 `@assistant-ui/react-ag-ui` 0.0.62 sources, and run): the reducer accepts `v0.9` and `v1.0` only
@@ -2411,7 +2413,7 @@ converter only ever see operations that passed the ones before them:
 | Rule (`refused.rule`) | Limit or requirement |
 |---|---|
 | `size` | at most **64 KiB** (65,536 bytes of UTF-8) of serialised operations; one byte more is refused |
-| `shape`, `version`, `surfaces` | an array of objects, each with a `version` (`v0.9`, `v0.9.1`, `v1.0`; `v0.9.1` is read as `v0.9`) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
+| `shape`, `version`, `surfaces` | an array of objects, each with `version` exactly `"1.0"` (an operation of an earlier version — `v0.9`, `v0.9.1`, the draft `v1.0` — is refused, rule `version`, and the reason names it: that is a surface of a thread from before the cutover, ADR 0075) and exactly one operation (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) with a surface id of 1 to 256 bytes; one surface per activity; a `createSurface` names a catalog, creates a surface not already live, and its inline `components` and `dataModel` are read; an `updateDataModel` carries a `value`; anything the reducer had to skip (a component without an id, an update of a surface never created) refuses the surface |
 | `catalog`, `schema` | the surface's catalog and, under ours, each instance's schema: see [The UI catalog](#the-ui-catalog) |
 | `components` | at most **400** components once the operations are applied (unreferenced ones count) |
 | `vocabulary` | under the basic catalog, only the components below; an unknown one refuses the surface wherever it is (never skipped) |
@@ -2485,20 +2487,20 @@ A refusal is one line in the `vymalo.error` style: "Interface not shown: <reason
 (`data-rule`), and the raw operations (first 4000 characters) in a disclosure, as text.
 
 The mock plays the orchestrator's `ui` story (`mock/scripts.ts`): `ui pick one` sends a surface (a
-title and a `Go` button, in two payloads, `v0.9.1`), asks "Pick one" and blocks; the action resumes it to
+title and a `Go` button, in two payloads, `1.0`), asks "Pick one" and blocks; the action resumes it to
 `answered: ui-action go`. `mock/golden.test.ts` requires its stream to be `a2ui.agui.json`, frame for
 frame, and its action route refuses what the orchestrator refuses (`422` malformed, unknown surface, an
 action with a message; `413` over the sizes; `409` a run open or the thread finished).
 
 ### The UI catalog
 
-[ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), contract
-[`docs/api/ui-catalog-v1.md`](../docs/api/ui-catalog-v1.md). The web **defines** the components an agent may name
+[ADR 0023](../docs/decisions/0023-ui-component-catalog-as-an-a2a-extension.md), [ADR 0075](../docs/decisions/0075-a2ui-v1-0-cutover.md),
+contract [`docs/api/ui-catalog-v2.md`](../docs/api/ui-catalog-v2.md). The web **defines** the components an agent may name
 beyond the basic vocabulary, tells every thread about them once, and refuses visibly what it cannot draw.
 
 | Piece | Where | What it is |
 |---|---|---|
-| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI inline catalog, `{catalogId, components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures) |
+| The catalog | `src/features/chat/lib/a2ui/catalog/catalog.json` | An A2UI 1.0 inline catalog, `{catalogId, protocolVersion: "1.0", components}`: one JSON Schema (draft 2020-12, self-contained, `additionalProperties: false`, values are literals) per component, validating the whole instance. `catalogId` is `https://agents.vymalo.com/a2ui/catalogs/chat`. Version 1 is `Text` and `Column`, version 2 adds `Choices`, version 3 adds `Cards` and `Mermaid`, version 4 adds `Image`, version 5 widens `Choices` (a title, a description, typed questions, pictures), version 6 adds the code, structure, data and media components, version 7 more kinds of question, version 8 what a question shows; **version 9 is version 8 as a v2 document** (the same components, `protocolVersion` added), digest `sha256:5f174e…` |
 | The lock | `catalog.lock.json` | `{version, digest}`. **The version is bumped by hand** and orders the catalogs a thread has seen (the highest is the newest); the digest is `sha256:` of the canonical JSON (`digest.ts`: sorted keys, no whitespace, integers only, ASCII keys only; the contract pins a known-answer vector, and `catalog.test.ts` checks it). The app ships the lock's digest and never computes one |
 | The script | `pnpm catalog:lock [<version>]` | Rewrites the lock. It refuses to put a new digest under the version it already had: change `catalog.json`, then `pnpm catalog:lock <next version>`, then add the pair to `RELEASED` in `catalog.test.ts` |
 | The tests | `catalog/catalog.test.ts` | The lock is the digest of `catalog.json` (a change without a new lock fails); the lock's pair is in `RELEASED` (a digest cannot change under a version that shipped); the document obeys the orchestrator's rules (an inline catalog only, no `$ref`/`$id`/`$anchor`/`$schema`, at most 64 components and 64 KiB, names like `Choices`); the send rule |
@@ -2531,9 +2533,9 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Named: the first createSurface names a catalog
-  Named --> Basic: no id, or a basic id: the vocabulary of ten
+  Named --> Basic: a basic id: the one v1.0 spelling, the vocabulary of ten
   Named --> Ours: the id of our catalog
-  Named --> Refused: any other id, an id that is not text, or two catalogs in one surface (rule catalog)
+  Named --> Refused: no id at all, any other id (the retired basic spellings too), an id that is not text, or two catalogs in one surface (rule catalog)
   Ours --> Newer: a component we lack, thread version above ours
   Ours --> Refused: a component we lack otherwise (catalog), or a broken schema (schema)
   Ours --> Drawn: every instance fits
@@ -2549,10 +2551,12 @@ stateDiagram-v2
   `shouldSendCatalog` says so (`catalog/index.ts`): the thread has none (a new thread has no snapshot yet, so the run that
   creates it carries the catalog), or our version is higher, or the version is the same and the digest differs. An older
   build sends nothing. The orchestrator records a digest once, so a run that sends it needlessly costs bytes only.
-- **Which catalog a surface names.** Every `createSurface.catalogId` of the surface; none is the basic catalog, as
-  before. The three spellings of the basic catalog's id (`BASIC_CATALOG_IDS`) and no id are the basic catalog and
-  follow the rules above; our `catalogId` is ours; **any other id refuses the surface** (rule `catalog`: "names the catalog
-  ... which this app does not have"), and so does a surface that names two (a later `createSurface` starts it over).
+- **Which catalog a surface names.** Every `createSurface.catalogId` of the surface; a surface that names none is refused
+  (rule `catalog`, "names no catalog": this app draws one catalog per surface, and A2UI 1.0's `catalogId` is optional
+  only for a component that names its own). The one v1.0 spelling of the basic catalog's id (`BASIC_CATALOG_IDS`) is the
+  basic catalog and follows the rules above; the retired `v0_9` and `v0_9_1` spellings are refused with any other id; our
+  `catalogId` is ours; **any other id refuses the surface** (rule `catalog`: "names the catalog ... which this app does
+  not have"), and so does a surface that names two (a later `createSurface` starts it over).
 - **Ours.** The allowed components are the keys of the catalog, not the vocabulary of ten. Each instance
   is validated against its schema and a violation refuses the surface (rule `schema`; "component "t" (Text) text:
   String is too long (4001 > 4000)": the id, the component and the first rule broken, cut and without control
