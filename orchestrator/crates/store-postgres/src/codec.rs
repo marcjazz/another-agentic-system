@@ -10,8 +10,8 @@ use orch_ports::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use sqlx::Row;
-use sqlx::postgres::PgRow;
+use tokio_postgres::Row as PgRow;
+use tokio_postgres::types::FromSql;
 
 use crate::error::store_err;
 
@@ -47,8 +47,12 @@ pub(crate) fn ts(t: Timestamp) -> Timestamp {
     t.round(Unit::Microsecond).unwrap_or(t)
 }
 
-pub(crate) fn to_db(t: Timestamp) -> jiff_sqlx::Timestamp {
-    jiff_sqlx::Timestamp::from(ts(t))
+/// What is bound for a time: [`ts`] of it. `tokio-postgres` writes a `Timestamp` by truncating
+/// it to the microsecond (toward 2000-01-01), where [`ts`] rounds it to the nearest, and the store
+/// returns [`ts`] of the time it was given: so it stores that, and what it returns is what it
+/// stored.
+pub(crate) fn to_db(t: Timestamp) -> Timestamp {
+    ts(t)
 }
 
 /// The snake_case wire spelling of a unit-variant enum, as stored in a text column.
@@ -68,21 +72,14 @@ pub(crate) fn parse_enum<T: DeserializeOwned>(what: &str, s: &str) -> Result<T, 
 }
 
 pub(crate) fn get_ts(row: &PgRow, col: &str) -> Result<Timestamp, StoreError> {
-    row.try_get::<jiff_sqlx::Timestamp, _>(col)
-        .map(jiff_sqlx::Timestamp::to_jiff)
-        .map_err(store_err)
+    row.try_get::<_, Timestamp>(col).map_err(store_err)
 }
 
 pub(crate) fn get_ts_opt(row: &PgRow, col: &str) -> Result<Option<Timestamp>, StoreError> {
-    row.try_get::<Option<jiff_sqlx::Timestamp>, _>(col)
-        .map(|t| t.map(jiff_sqlx::Timestamp::to_jiff))
-        .map_err(store_err)
+    row.try_get::<_, Option<Timestamp>>(col).map_err(store_err)
 }
 
-fn get<'r, T>(row: &'r PgRow, col: &str) -> Result<T, StoreError>
-where
-    T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
-{
+fn get<'r, T: FromSql<'r>>(row: &'r PgRow, col: &str) -> Result<T, StoreError> {
     row.try_get(col).map_err(store_err)
 }
 
@@ -254,4 +251,33 @@ pub(crate) fn inbox_from_row(row: &PgRow) -> Result<InboxItem, StoreError> {
         last_error: get(row, "last_error")?,
         created_at: get_ts(row, "created_at")?,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use bytes::BytesMut;
+    use tokio_postgres::types::{FromSql as _, ToSql as _, Type};
+
+    use super::*;
+
+    /// What the server receives for `t`, read back as the server would answer it.
+    fn sent(t: Timestamp) -> Timestamp {
+        let mut buf = BytesMut::new();
+        t.to_sql(&Type::TIMESTAMPTZ, &mut buf).unwrap();
+        Timestamp::from_sql(&Type::TIMESTAMPTZ, &buf).unwrap()
+    }
+
+    #[test]
+    fn a_time_is_rounded_before_the_driver_truncates_it() {
+        let t: Timestamp = "2026-01-01T00:00:00.0000009Z".parse().unwrap();
+        let up: Timestamp = "2026-01-01T00:00:00.000001Z".parse().unwrap();
+        assert_eq!(
+            sent(t),
+            "2026-01-01T00:00:00Z".parse::<Timestamp>().unwrap(),
+            "the driver truncates"
+        );
+        assert_eq!(ts(t), up, "the store returns the rounded time");
+        assert_eq!(sent(to_db(t)), ts(t), "and stores it");
+    }
 }
