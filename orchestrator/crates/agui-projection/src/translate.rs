@@ -46,6 +46,12 @@ pub struct KnownThread {
     pub open_interrupts: Vec<String>,
     /// Every message id the log already holds (user, agent and activity messages).
     pub message_ids: BTreeSet<String>,
+    /// The run each user message of the log opened, by message id (ADR 0082): a resend of that
+    /// message, whatever `runId` it carries, attaches to the run the log says it belongs to.
+    pub message_runs: BTreeMap<String, String>,
+    /// The words each user message of the log was sent with, by message id (ADR 0082): an id is
+    /// bound to its text, so a request that repeats the id with other words is refused.
+    pub message_texts: BTreeMap<String, String>,
     /// Every run id the log already holds.
     pub run_ids: BTreeSet<String>,
     /// The A2UI surfaces the thread has now, with the dialect each one speaks. An action is
@@ -117,6 +123,18 @@ pub enum InputError {
     NothingToRun {
         /// The request's `runId`.
         run_id: String,
+    },
+    /// A message id the log holds was sent with other words (422, `message_id_reused`). An id is
+    /// bound to the text it was first written with (ADR 0082, C4): a client that edits a draft
+    /// mints a new id, because a resend repeats the same bytes. Accepting another text would make
+    /// the id meaningless.
+    #[error(
+        "message {message_id:?} is already in this thread with other words; a message id is bound \
+         to the text it was sent with, so an edited message needs a new id"
+    )]
+    MessageIdReused {
+        /// The id the request repeated.
+        message_id: String,
     },
     /// More than one message is new (422): the orchestrator owns the history, one message at a
     /// time.
@@ -246,6 +264,7 @@ impl InputError {
             | InputError::TooManyNewMessages { .. }
             | InputError::NewNonUserMessage { .. }
             | InputError::EmptyMessage { .. }
+            | InputError::MessageIdReused { .. }
             | InputError::InvalidResumePayload { .. }
             | InputError::RunIdReused { .. }
             | InputError::InvalidAction { .. }
@@ -254,6 +273,34 @@ impl InputError {
             | InputError::AmbiguousAction
             | InputError::AmbiguousAnswer => 422,
             InputError::ActionTooLarge { .. } => 413,
+        }
+    }
+
+    /// The stable, machine-readable `code` of the problem the surface answers with, where a client
+    /// acts on it (the RFC 9457 extension member `code` that `orch_api::Problem` carries). `None`
+    /// for the refusals that are only a status and a sentence: their bodies are what they always
+    /// were.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            InputError::MessageIdReused { .. } => Some("message_id_reused"),
+            InputError::ThreadIdNotUuid { .. }
+            | InputError::ProtocolVersion { .. }
+            | InputError::NothingToRun { .. }
+            | InputError::TooManyNewMessages { .. }
+            | InputError::NewNonUserMessage { .. }
+            | InputError::EmptyMessage { .. }
+            | InputError::InvalidResumePayload { .. }
+            | InputError::AmbiguousAnswer
+            | InputError::RunIdReused { .. }
+            | InputError::RunInProgress
+            | InputError::InvalidSend { .. }
+            | InputError::ThreadFinished { .. }
+            | InputError::InvalidAction { .. }
+            | InputError::ActionTooLarge { .. }
+            | InputError::UnknownSurface { .. }
+            | InputError::EarlierSurface { .. }
+            | InputError::AmbiguousAction
+            | InputError::WrongAgent { .. } => None,
         }
     }
 }
@@ -306,6 +353,10 @@ pub struct Translation {
     pub inputs: Vec<Input>,
     /// What was ignored on the way.
     pub warnings: Vec<Warning>,
+    /// The run to attach to, when `inputs` is empty and it is not the request's own `runId`: the run
+    /// the log says the resent message opened (ADR 0082, decision 5). `None` means the request's
+    /// `runId`, which is the run of a retry that repeats it.
+    pub attach: Option<String>,
 }
 
 /// The thread id of a request, as a core id. Not a UUID is a 400.
@@ -356,6 +407,7 @@ pub fn translate(input: &RunAgentInput, thread: &ThreadView) -> Result<Vec<Input
 /// | `resume` cancelled, no new message | `[Cancel]` |
 /// | `resume` cancelled and a new user message | `[UserMessage]` |
 /// | nothing new, `runId` recorded | `[]`: attach |
+/// | nothing new, a resent message the log holds | `[]`: attach to the run that message opened, whatever `runId` the request carries (ADR 0082) |
 /// | one new user message and `vymalo.send: "interrupt"`, thread exists | `[StopAndSend]` |
 ///
 /// and the refusals of [`InputError`]. A thread that is finished takes only a message (it starts
@@ -385,6 +437,27 @@ pub fn translate_with_warnings(
         ThreadView::Known(k) => Some(k),
         ThreadView::New { .. } => None,
     };
+
+    // An id is bound to the text it was first written with (ADR 0082, C4): a resend repeats the
+    // same bytes, so a known id sent with other words is a second message wearing the first one's
+    // id, refused before anything is written. Both ways this function reconciles by id — the drop
+    // below and an attach — pass through here, so neither discards the new words silently.
+    if let Some(k) = known {
+        for message in &input.messages {
+            let Message::User(u) = message else {
+                continue;
+            };
+            let Some(logged) = k.message_texts.get(u.id.as_str()) else {
+                continue;
+            };
+            let (text, _) = user_text(&u.content);
+            if text != *logged {
+                return Err(InputError::MessageIdReused {
+                    message_id: u.id.to_string(),
+                });
+            }
+        }
+    }
 
     // Reconcile by id: what the thread already holds is not new, whatever its role.
     let mut new_users = Vec::new();
@@ -541,8 +614,24 @@ pub fn translate_with_warnings(
                 Some(k) if k.run_ids.contains(input.run_id.as_str()) => Ok(Translation {
                     inputs: Vec::new(),
                     warnings,
+                    attach: None,
                 }),
-                Some(_) | None => Err(InputError::NothingToRun {
+                // A resend of a message the log holds, under a `runId` of its own: it attaches to
+                // the run that message opened (ADR 0082, decision 5). Five sends of one message are
+                // one message, one run and one charge, and the person is shown the answer instead
+                // of a refusal. The message is the last of the request that the log has: the one
+                // the client is sending again.
+                Some(k) => match last_opened_run(input, k) {
+                    Some(run) => Ok(Translation {
+                        inputs: Vec::new(),
+                        warnings,
+                        attach: Some(run),
+                    }),
+                    None => Err(InputError::NothingToRun {
+                        run_id: input.run_id.to_string(),
+                    }),
+                },
+                None => Err(InputError::NothingToRun {
                     run_id: input.run_id.to_string(),
                 }),
             };
@@ -550,6 +639,17 @@ pub fn translate_with_warnings(
     };
 
     finish(inputs, input, known, send, warnings)
+}
+
+/// The run the last message of `input` that the log holds opened (ADR 0082): `None` when the request
+/// carries no message the log's `user_message` events name a run for.
+fn last_opened_run(input: &RunAgentInput, known: &KnownThread) -> Option<String> {
+    input
+        .messages
+        .iter()
+        .filter_map(|message| known.message_runs.get(message.id().as_str()))
+        .next_back()
+        .cloned()
 }
 
 /// Something is to be applied: a thread that cannot take it says so before the stream.
@@ -585,7 +685,11 @@ fn finish(
             return Err(InputError::RunInProgress);
         }
     }
-    Ok(Translation { inputs, warnings })
+    Ok(Translation {
+        inputs,
+        warnings,
+        attach: None,
+    })
 }
 
 /// How the run says its message is delivered, `forwardedProps["vymalo.send"]` (ADR 0036):

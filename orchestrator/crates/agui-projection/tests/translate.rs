@@ -49,6 +49,8 @@ fn known(state: ThreadState) -> KnownThread {
         run_open: matches!(state, ThreadState::Queued | ThreadState::Working),
         open_interrupts: Vec::new(),
         message_ids: BTreeSet::new(),
+        message_runs: BTreeMap::new(),
+        message_texts: BTreeMap::new(),
         run_ids: BTreeSet::new(),
         surfaces: BTreeMap::new(),
     }
@@ -383,9 +385,97 @@ fn nothing_new_and_a_run_that_exists_attaches() {
         t,
         Translation {
             inputs: vec![],
-            warnings: vec![]
+            warnings: vec![],
+            attach: None,
         }
     );
+}
+
+#[test]
+fn a_resend_of_a_known_message_under_a_new_run_id_attaches_to_the_run_it_opened() {
+    // ADR 0082, decision 5: the id is the client's, so a retry cannot be expected to remember the
+    // run id too. The log's `user_message` says which run the message opened, and that is the run
+    // the resend is shown — provided the words are the same.
+    let view = KnownThread {
+        message_ids: ["m-1".to_owned()].into(),
+        message_runs: [("m-1".to_owned(), "r-1".to_owned())].into(),
+        message_texts: [("m-1".to_owned(), "first".to_owned())].into(),
+        run_ids: ["r-1".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({"runId": "r-retry", "messages": [user_msg("m-1", "first")]}));
+    let t = translate_with_warnings(&resend, &ThreadView::Known(view)).unwrap();
+    assert!(t.inputs.is_empty(), "nothing is written twice: {t:?}");
+    assert_eq!(t.attach.as_deref(), Some("r-1"));
+}
+
+#[test]
+fn a_known_message_id_sent_with_other_words_is_refused_on_both_paths() {
+    // ADR 0082, C4: an id is bound to the text it was first written with, so an edited draft is a
+    // second message wearing the first one's id. Both ways an id is reconciled today — the drop of
+    // a message the log holds, and an attach — must refuse rather than discard the new words.
+    for run_id in ["r-1", "r-retry"] {
+        let view = KnownThread {
+            message_ids: ["m-1".to_owned()].into(),
+            message_runs: [("m-1".to_owned(), "r-1".to_owned())].into(),
+            message_texts: [("m-1".to_owned(), "first".to_owned())].into(),
+            run_ids: ["r-1".to_owned()].into(),
+            ..known(ThreadState::Done)
+        };
+        let edited = request(json!({"runId": run_id, "messages": [user_msg("m-1", "second")]}));
+        let e = err(&edited, view);
+        assert_eq!(
+            e,
+            InputError::MessageIdReused {
+                message_id: "m-1".into()
+            },
+            "{run_id}"
+        );
+        assert_eq!(e.http_status(), 422);
+        assert_eq!(e.code(), Some("message_id_reused"));
+    }
+}
+
+#[test]
+fn a_resend_attaches_to_the_last_message_of_the_request_the_log_has() {
+    // The client resends its whole transcript: the message it is sending again is the last one.
+    let view = KnownThread {
+        message_ids: ["m-1".to_owned(), "m-2".to_owned()].into(),
+        message_runs: [
+            ("m-1".to_owned(), "r-1".to_owned()),
+            ("m-2".to_owned(), "r-2".to_owned()),
+        ]
+        .into(),
+        message_texts: [
+            ("m-1".to_owned(), "first".to_owned()),
+            ("m-2".to_owned(), "second".to_owned()),
+        ]
+        .into(),
+        run_ids: ["r-1".to_owned(), "r-2".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({
+        "runId": "r-retry",
+        "messages": [user_msg("m-1", "first"), user_msg("m-2", "second")]
+    }));
+    let t = translate_with_warnings(&resend, &ThreadView::Known(view)).unwrap();
+    assert_eq!(t.attach.as_deref(), Some("r-2"));
+}
+
+#[test]
+fn a_resend_of_a_message_that_opened_no_run_is_still_nothing_to_run() {
+    // A known id whose log entry opened no run (an agent's message, an activity): there is no run
+    // to attach to, and the 422 stays the guard it was.
+    let view = KnownThread {
+        message_ids: ["evt-2".to_owned()].into(),
+        run_ids: ["r-1".to_owned()].into(),
+        ..known(ThreadState::Done)
+    };
+    let resend = request(json!({"runId": "r-retry", "messages": [user_msg("evt-2", "echo")]}));
+    assert!(matches!(
+        err(&resend, view),
+        InputError::NothingToRun { .. }
+    ));
 }
 
 #[test]
@@ -1111,8 +1201,10 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
 }
 
 proptest! {
-    /// Re-sending everything the log holds, with a run it has, never applies anything twice:
-    /// reconciliation by id turns it into an attach.
+    /// Re-sending everything the log holds — each message with **the words the log holds for it** —
+    /// never applies anything twice: reconciliation by id turns it into an attach. The words matter
+    /// since ADR 0082: an id is bound to its text, so a transcript that repeats another text under a
+    /// known user message id is the case below, not a resend.
     #[test]
     fn re_sending_the_transcript_never_duplicates_input(actions in arb_actions()) {
         let events = build(&actions);
@@ -1125,11 +1217,44 @@ proptest! {
         let messages: Vec<Value> = view
             .message_ids
             .iter()
-            .map(|id| user_msg(id, "x"))
+            .map(|id| {
+                // An id the log holds no text for is an agent's or an activity message: the refusal
+                // does not cover it, and any text is ignored there.
+                let text = view.message_texts.get(id).map_or("x", String::as_str);
+                user_msg(id, text)
+            })
             .collect();
         let input = request(json!({"runId": run, "messages": messages}));
         let t = translate(&input, &ThreadView::Known(view)).unwrap();
         prop_assert!(t.is_empty());
+    }
+
+    /// The other half of the same rule: a **known user message id** sent with other words is
+    /// refused, so "the id is the text" holds in both directions and neither path — the drop or an
+    /// attach — can discard the new words.
+    #[test]
+    fn a_known_user_message_id_sent_with_other_words_is_refused(actions in arb_actions()) {
+        let events = build(&actions);
+        let mut projector = Projector::new(meta());
+        for e in &events {
+            projector.apply(e, Audience::Viewer);
+        }
+        let ThreadView::Known(view) = projector.view(&alice()) else { unreachable!() };
+        let Some((id, text)) = view
+            .message_texts
+            .iter()
+            .next()
+            .map(|(id, text)| (id.clone(), text.clone()))
+        else {
+            return Ok(());
+        };
+        // Never the text the log holds, whatever it is (even empty).
+        let other = format!("{text} ");
+        let input = request(json!({"runId": "run-x", "messages": [user_msg(&id, &other)]}));
+        prop_assert_eq!(
+            translate(&input, &ThreadView::Known(view)).unwrap_err(),
+            InputError::MessageIdReused { message_id: id }
+        );
     }
 }
 

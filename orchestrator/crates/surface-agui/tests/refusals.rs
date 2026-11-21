@@ -399,20 +399,61 @@ async fn what_the_orchestrator_owns_cannot_be_sent() {
 }
 
 #[tokio::test]
-async fn nothing_new_on_a_known_thread_under_an_unknown_run_is_a_422() {
+async fn nothing_to_run_is_still_a_422_and_a_resent_message_attaches_to_its_run() {
+    // ADR 0082, decision 5: "nothing to run" is about a request with no run to attach to. A resend
+    // of a message the log holds, under a run id of its own, is not that any more — it attaches to
+    // the run that message opened. Both halves are asserted here, so the pair reads as the rule.
     let h = Harness::start().await;
     let thread = new_thread_id();
     h.run("plain", ALICE, &input(&thread, "r1", &[("m1", "ask me")]))
         .await
         .all()
         .await;
+    // Nothing to run, the plainest way: no message at all, under a run that never was.
+    h.refused("plain", Some(ALICE), &input(&thread, "never", &[]))
+        .await
+        .problem(422);
+    // And with an id the thread holds that is **not a user message** — an activity's, taken from
+    // the thread's own frames, so the case does not depend on what the agent says. No run is
+    // attached to such an id, so there is still nothing to attach to.
+    let mut viewer = h.connect(&thread, ALICE, None).await;
+    let frames = viewer.until(|f| f.kind() == "RUN_FINISHED").await;
+    let not_a_message = frames
+        .iter()
+        .filter_map(|f| f.event["messageId"].as_str())
+        .find(|id| *id != "m1")
+        .unwrap_or_else(|| {
+            panic!("the thread holds no id that is not the user's message: {frames:?}")
+        })
+        .to_owned();
     h.refused(
         "plain",
         Some(ALICE),
-        &input(&thread, "never", &[("m1", "ask me")]),
+        &input(&thread, "never", &[(not_a_message.as_str(), "ask me")]),
     )
     .await
     .problem(422);
+    // The resend decision 5 made an attach: the same words, a run id of its own.
+    let attached = h
+        .run(
+            "plain",
+            ALICE,
+            &input(&thread, "never", &[("m1", "ask me")]),
+        )
+        .await
+        .all()
+        .await;
+    assert_eq!(attached.first().unwrap().kind(), "RUN_STARTED");
+    assert_eq!(attached.first().unwrap().event["runId"], "r1");
+    assert_eq!(attached.last().unwrap().kind(), "RUN_FINISHED");
+    // None of it wrote anything: one message, one delivery.
+    let after = h.events(ALICE, &thread).await;
+    assert_eq!(
+        after.iter().filter(|e| e["kind"] == "user_message").count(),
+        1,
+        "{after:?}"
+    );
+    assert_eq!(h.agent.sends().len(), 1);
 }
 
 #[tokio::test]
@@ -445,11 +486,13 @@ async fn a_resume_that_answers_nothing_is_ignored_and_a_malformed_answer_is_a_42
     let thread = new_thread_id();
     let first = input(&thread, "r1", &[("m1", "ask me")]);
     h.run("plain", ALICE, &first).await.all().await;
-    // An id that is not open: ignored with a warning; with no message either, nothing to run.
+    // An id that is not open is ignored with a warning; with no message either, nothing to run.
+    // The message the thread holds is not sent back: with its own words it would attach to the run
+    // it opened (ADR 0082), and this case is about a resume that answers nothing.
     let stale = input_with(
         &thread,
         "r2",
-        &[("m1", "ask me")],
+        &[],
         json!({"resume": [{"interruptId": "int-99", "status": "resolved", "payload": {"text": "x"}}]}),
     );
     h.refused("plain", Some(ALICE), &stale).await.problem(422);
