@@ -31,6 +31,7 @@ fn said(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         mentions: Vec::new(),
         tier,
         tier_cap: cap,
+        locale: None,
     }
 }
 fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input {
@@ -44,6 +45,7 @@ fn stop(text: &str, tier: Option<AccessTier>, cap: Option<AccessTier>) -> Input 
         mentions: Vec::new(),
         tier,
         tier_cap: cap,
+        locale: None,
     }
 }
 fn status(state: AgentTaskState) -> Input {
@@ -300,6 +302,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: Some(Plan),
+                locale: None,
             },
         );
         assert_eq!(sent(&cmds), (None, Some(Plan)), "{state:?}");
@@ -313,6 +316,7 @@ fn a_redelivered_message_carries_the_cap_its_row_held() {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: Some(Edits),
+                locale: None,
             },
         );
         assert_eq!(sent(&cmds), (None, Some(Edits)), "{state:?}");
@@ -332,6 +336,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_cap_it_went_out_unde
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: Some(Plan),
+                locale: None,
             },
         );
         assert!(
@@ -441,6 +446,7 @@ fn mentioning(text: &str, mentions: Vec<Mention>) -> Input {
         mentions,
         tier: None,
         tier_cap: None,
+        locale: None,
     }
 }
 

@@ -76,6 +76,7 @@ async fn start(
 fn message(text: &str, tier: Option<AccessTier>) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -90,6 +91,7 @@ fn message(text: &str, tier: Option<AccessTier>) -> Input {
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
     Input::StopAndSend {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -538,6 +540,7 @@ async fn a_stop_and_send_starts_the_next_job_with_the_tier_of_its_messages() {
 fn mcp_message(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: None,
@@ -1073,6 +1076,7 @@ fn edit(seq: i64, tier: Option<AccessTier>) -> ForkRequest {
             text: "echo instead".to_owned(),
             message_id: Some("m-edit".to_owned()),
             tier,
+            locale: None,
         },
         target: None,
         id: None,
@@ -1091,6 +1095,7 @@ fn first_message_after(seq: i64, tier: Option<AccessTier>) -> ForkRequest {
                 ui_catalog: None,
                 mentions: Vec::new(),
                 tier,
+                locale: None,
             }),
         },
         target: None,

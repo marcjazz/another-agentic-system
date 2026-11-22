@@ -102,6 +102,7 @@ async fn verifying_with(
             t.id,
             Input::UserMessage {
                 tier_cap: None,
+                locale: None,
                 user: alice(),
                 text: "and mind the style".into(),
                 message_id: None,
@@ -393,6 +394,7 @@ async fn the_verifier_is_not_told_the_conversation_a_fork_of_the_authors_thread_
                     text: "mind the style, please".into(),
                     message_id: None,
                     tier: None,
+                    locale: None,
                 },
                 target: None,
                 id: None,
@@ -890,6 +892,7 @@ async fn a_request_that_reached_the_verifier_before_the_crash_is_found_not_resen
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         },
     )
     .await
@@ -1000,6 +1003,7 @@ async fn sent_and_forgotten(w: &World, _t: &ThreadRecord, row: &OutboxItem) {
             mentions: Vec::new(),
             tier: None,
             tier_cap: None,
+            locale: None,
         },
     )
     .await

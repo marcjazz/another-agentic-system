@@ -9,12 +9,12 @@ use futures::stream::BoxStream;
 use orch_core::{
     AccessTier, AgentBuild, AgentId, AgentInfo, AgentTarget, AgentUpdate, AskLimits, BranchPoint,
     Classify, Command, DescriptionSource, Event, EventKind, ForkKind, ForkPoint, ForkSource,
-    GatePolicy, Input, Job, LiveText, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention, Origin,
-    PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId, ThreadRecord,
-    ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData, UserId, WatchKey,
-    branch_points, check_answer, check_description, check_servers, check_title, copied,
-    family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash, is_fork_at,
-    rail_parent_of_fork, repo_key, report, start_thread, transition,
+    GatePolicy, Input, Job, LiveText, LocaleHint, MAX_ATTACHED_SERVERS, MAX_FORK_FAMILY, Mention,
+    Origin, PersonSaid, PersonSaidBuilder, Replacement, TaskKind, ThreadForkedData, ThreadId,
+    ThreadRecord, ThreadState, TierListing, Timestamp, TitleSource, ToolsError, UiCatalogData,
+    UserId, WatchKey, branch_points, check_answer, check_description, check_servers, check_title,
+    copied, family_root, file_refs, fork_commit, fork_cut, fork_message, is_commit_hash,
+    is_fork_at, rail_parent_of_fork, repo_key, report, start_thread, transition,
 };
 pub use orch_ports::Received;
 use orch_ports::{
@@ -337,6 +337,11 @@ pub struct Inbound {
     /// ([`AppError::Unprocessable`], [`AppError::CardUnavailable`]). Recorded on the `user_message`
     /// as sent.
     pub tier: Option<AccessTier>,
+    /// The interface locale the first message names (AG-UI `forwardedProps["vymalo.locale"]`,
+    /// ADR 0085), already read and checked by a surface ([`locale::parse`](crate::locale::parse)).
+    /// A hint: it is carried on the delegation to an agent whose live card lists `locale/v1`, and it
+    /// is **never written to the log** (nothing of it is projected or exported).
+    pub locale: Option<LocaleHint>,
 }
 
 /// Result of [`App::create_thread_as`].
@@ -380,6 +385,9 @@ pub enum ForkAt {
         /// The access tier the person names for it (ADR 0061). An edit that names none is sent under
         /// the tier of the message it replaces, as lowered to the person's cap and the agent's card.
         tier: Option<AccessTier>,
+        /// The interface locale the person names for it (ADR 0085). An edit that names none carries
+        /// the one of the message it replaces, as the tier does.
+        locale: Option<LocaleHint>,
     },
 }
 
@@ -404,6 +412,9 @@ pub struct FirstMessage {
     /// The access tier the message names (ADR 0061), checked against the person's cap and the live
     /// card of the fork's agent, as for the first message of a new thread.
     pub tier: Option<AccessTier>,
+    /// The interface locale the message names (ADR 0085): the language the person's screen reads
+    /// in, a hint carried as the tier is, and recorded on the fork's first `user_message`.
+    pub locale: Option<LocaleHint>,
 }
 
 /// What a person asks of [`App::fork_thread`].
@@ -1098,6 +1109,7 @@ impl<P: Ports> App<P> {
                 mentions: inbound.mentions,
                 tier: tier.tier,
                 tier_cap: tier.cap,
+                locale: inbound.locale,
             },
         )?;
         // The servers are attached in the commit that holds the first message, after it, so that
@@ -1590,6 +1602,7 @@ impl<P: Ports> App<P> {
                         mentions: first.mentions,
                         tier: first.tier,
                         tier_cap: None,
+                        locale: first.locale,
                         run_id: first.run_id,
                         origin: first.origin,
                     }),
@@ -1600,10 +1613,12 @@ impl<P: Ports> App<P> {
                 text,
                 message_id,
                 tier,
+                locale,
             } => {
                 validate_text(&text)?;
                 let mut edit = Replacement::edit(text, message_id, None);
                 edit.tier = tier;
+                edit.locale = locale;
                 (ForkPoint::Replace(seq), ForkKind::Edit, Some(edit))
             }
         };
@@ -1639,6 +1654,12 @@ impl<P: Ports> App<P> {
                     .await?;
                 replacement.tier = pin.tier;
                 replacement.tier_cap = pin.cap;
+                // An edit that names no interface locale carries the replaced message's, as it
+                // carries its tier: the message it continues was written on a screen that read in
+                // that language (ADR 0085).
+                if replacement.locale.is_none() {
+                    replacement.locale = replaced_seq.and_then(|seq| replaced_locale(&events, seq));
+                }
                 Some(replacement)
             }
             None => None,
@@ -2255,6 +2276,7 @@ impl<P: Ports> App<P> {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: None,
+                locale: None,
             }
         } else {
             Input::UserMessage {
@@ -2267,6 +2289,7 @@ impl<P: Ports> App<P> {
                 mentions: Vec::new(),
                 tier: None,
                 tier_cap: None,
+                locale: None,
             }
         };
         // like any message of a person: the checks, the mentions and the access tier (ADR 0061)
@@ -2832,6 +2855,7 @@ impl<P: Ports> App<P> {
                     mentions,
                     tier,
                     tier_cap,
+                    locale,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Delegate {
@@ -2842,6 +2866,7 @@ impl<P: Ports> App<P> {
                         mentions,
                         tier,
                         tier_cap,
+                        locale,
                     },
                 }),
                 // A message to a running job (ADR 0036): the dispatcher sends it into the agent's
@@ -2856,6 +2881,7 @@ impl<P: Ports> App<P> {
                     mentions,
                     tier,
                     tier_cap,
+                    locale,
                 } => outbox.push(NewOutbox {
                     id: orch_ports::OutboxId(self.ports.ids().new_id()),
                     payload: OutboxPayload::Steer {
@@ -2865,6 +2891,7 @@ impl<P: Ports> App<P> {
                         mentions,
                         tier,
                         tier_cap,
+                        locale,
                     },
                 }),
                 Command::DelegateAction {
@@ -3695,6 +3722,16 @@ fn describe_watch_key(key: &str) -> (&str, &str) {
 }
 
 /// The access tier of the person's message at `seq`, which an edit replaces (ADR 0061).
+fn replaced_locale(events: &[Event], seq: i64) -> Option<LocaleHint> {
+    events
+        .iter()
+        .find(|e| e.seq == seq)
+        .and_then(|e| match &e.body {
+            orch_core::EventBody::UserMessage(m) => m.locale.clone(),
+            _ => None,
+        })
+}
+
 fn replaced_tier(events: &[Event], seq: i64) -> Option<AccessTier> {
     events
         .iter()

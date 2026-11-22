@@ -16,6 +16,7 @@ fn user() -> UserId {
 fn said(text: &str, tier: Option<AccessTier>) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: Some("m-1".into()),
@@ -29,6 +30,7 @@ fn said(text: &str, tier: Option<AccessTier>) -> Input {
 fn stop(text: &str, tier: Option<AccessTier>) -> Input {
     Input::StopAndSend {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -263,6 +265,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 sent: false,
                 mentions: Vec::new(),
                 tier: Some(Plan),
+                locale: None,
             },
         );
         assert_eq!(sent(&cmds), Some(Plan), "{state:?}");
@@ -276,6 +279,7 @@ fn a_redelivered_message_carries_the_tier_its_row_held() {
                 sent: false,
                 mentions: Vec::new(),
                 tier: Some(Auto),
+                locale: None,
             },
         );
         assert_eq!(sent(&cmds), Some(Auto), "{state:?}");
@@ -295,6 +299,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
                 sent: true,
                 mentions: Vec::new(),
                 tier: Some(Edits),
+                locale: None,
             },
         );
         assert!(
@@ -320,6 +325,7 @@ fn a_redelivery_of_a_message_already_sent_gives_the_job_the_tier_it_went_out_und
             sent: true,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         },
     );
     assert_eq!(snap.job.tier, None);
@@ -378,6 +384,7 @@ fn the_rework_after_a_redelivery_of_a_sent_message_is_under_its_tier() {
             sent: true,
             mentions: Vec::new(),
             tier: Some(Plan),
+            locale: None,
         },
     );
     assert!(cmds.is_empty());

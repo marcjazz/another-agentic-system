@@ -60,6 +60,7 @@ fn completed() -> Input {
 fn message(text: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: user(),
         text: text.into(),
         message_id: None,
@@ -3303,6 +3304,7 @@ fn a_redelivery_to_a_thread_that_moved_on_joins_the_job_it_reached() {
             sent: false,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }],
     );
     assert_eq!((open.state, open.job.number), (Working, 2));

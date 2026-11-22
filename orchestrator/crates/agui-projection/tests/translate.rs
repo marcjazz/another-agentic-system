@@ -79,6 +79,7 @@ fn idle_known() -> KnownThread {
 fn um(text: &str, message_id: Option<&str>, run_id: &str) -> Input {
     Input::UserMessage {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: message_id.map(str::to_owned),
@@ -538,6 +539,7 @@ fn sending(how: Value) -> RunAgentInput {
 fn stop(text: &str, message_id: &str, run_id: &str) -> Input {
     Input::StopAndSend {
         tier_cap: None,
+        locale: None,
         user: alice(),
         text: text.to_owned(),
         message_id: Some(message_id.to_owned()),
@@ -1181,6 +1183,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
                 delivery: None,
                 mentions: Vec::new(),
                 tier: None,
+                locale: None,
             }),
         ),
         ev(
@@ -1242,6 +1245,7 @@ fn an_answer_is_idempotent_across_the_log_the_projection_and_the_view() {
             delivery: None,
             mentions: Vec::new(),
             tier: None,
+            locale: None,
         }),
     ));
     // ... and a retry of the same POST attaches instead of answering twice.
