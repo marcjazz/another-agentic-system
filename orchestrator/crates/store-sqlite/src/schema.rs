@@ -54,6 +54,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         description: "user_prompts",
         sql: include_str!("../migrations/0003_user_prompts.sql"),
     },
+    Migration {
+        version: 4,
+        description: "thread_pick",
+        sql: include_str!("../migrations/0004_thread_pick.sql"),
+    },
 ];
 
 /// The SHA-256 of a migration's text, lowercase hex: the `checksum` column.
