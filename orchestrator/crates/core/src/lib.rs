@@ -25,6 +25,7 @@ mod live;
 mod locale;
 mod memory;
 mod mention;
+mod notify;
 mod pick;
 mod pricing;
 pub mod prompt;
@@ -122,6 +123,10 @@ pub use memory::{
     Refusal, SaveInput, ThreadSwitch, check_call, listed,
 };
 pub use mention::{MAX_MENTION_LABEL_UNITS, MAX_MENTIONS, Mention, utf16_len};
+pub use notify::{
+    Notify, NotifyClass, NotifyIntent, NotifyKind, NotifyTtl, ThreadRole,
+    collapse as collapse_notifications, fold as fold_notifications,
+};
 pub use pick::{
     AgentModelChoice, AgentPick, EffortOffer, Listing, MAX_MODEL_ID_LEN, MODEL_PICK_EXTENSION,
     ModelChoice, ModelId, ModelPick, ModelPickOffer, PickError, PickListings, PickRefusal,
