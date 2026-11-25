@@ -1650,8 +1650,10 @@ lease, and one that lists no agent token admits no lookup at all (`401 unauthent
 
 The injector is the half of [ADR 0084](../../docs/decisions/0084-the-run-lease-the-broker-binds-a-run-and-lends-its-model-credential.md)
 that keeps the deployment's model key out of every agent. It is a second, **internal** path to the model, rendered by this
-chart and **off by default**:
+chart and **off by default**. The header contract — who may set `Authorization` and `x-account-id`, what is checked, what
+is refused, and what the header does not authorise — is [`docs/api/model-injector.md`](../../docs/api/model-injector.md).
 
+In one picture:
 ```
 agent ──Authorization: its own (or none)──▶ Gateway (Agent Router, ClusterIP)
                                               │  ext-authz gRPC
@@ -1676,7 +1678,7 @@ What the chart renders when `injector.enabled` is true (values.yaml, `injector`)
 | `Gateway` + `EnvoyProxy` | Agent Router's Gateway, and the EnvoyProxy that pins its Service name and makes it `ClusterIP`. The Service lives in Envoy Gateway's namespace; **the Gateway has no Ingress and no edge route.** |
 | `ClientTrafficPolicy` | `bufferLimit` (`50Mi`): a model answer is larger than Envoy's default 32 KiB. |
 | `Backend`, `BackendTLSPolicy`, `AIServiceBackend`, `AIGatewayRoute` | the upstream from `injector.upstream.url`, and the route that selects it by `injector.modelHeader: injector.model`. With an `https` upstream the policy validates it against the system CA. |
-| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` plus `x-account-id: {auth.metadata.lease.accountId}` in `response.success.headers`. A lease with no token is denied, so a refused lookup never forwards an empty `Bearer`. |
+| `Authorino`, `AuthConfig` | the authorizer: a `kubernetesTokenReview` of the agent's service-account token, the broker lookup keyed by `X-Run-Id` and cached per run for at most `broker.cacheTtlSecs` (≤ 30 s, the lease), and `Authorization: Bearer {auth.metadata.lease.token}` plus `x-account-id: {auth.metadata.lease.accountId}` in `response.success.headers`. A lease with no token or no account id is denied, so a refused lookup never forwards an empty `Bearer` or an empty `x-account-id`. |
 | `SecurityPolicy` | `extAuth.grpc` to Authorino's Service, scoped to the **`HTTPRoute` Agent Router generates** from the `AIGatewayRoute` (same name), not to the whole Gateway. |
 | `ExternalSecret` | the injector's own broker token, from `injector.broker.tokenProperty` of the AWS secret. A property name, never a value. |
 
