@@ -1,0 +1,53 @@
+# Orchestrator configuration for App Factory container-only MVP (E2-T1, ADR 0073).
+# Mounted at /etc/orchestrator/config.yaml by compose.factory.yaml (overridable via ORCH_FACTORY_CONFIG_FILE).
+# Note: orch-config requires literal https:// URLs in auth.jwt.* when server.environment is production;
+# replace auth.jwt.issuer / audiences or set ORCH_FACTORY_CONFIG_FILE to your tenant config for live OIDC.
+version: 1
+
+server:
+  environment: production
+  surfaces: [agui, mcp, thread-tools, webhook-generic, webhook-github]
+  publicUrl: https://127.0.0.1:8443
+
+log:
+  format: json
+
+database:
+  url: { env: DATABASE_URL }
+
+agents:
+  file: agents.factory.yaml
+
+artifacts:
+  store: fs
+  fs: { root: /var/lib/orchestrator/artifacts }
+
+threadTools:
+  url: https://edge:8443
+  secret: { env: THREAD_TOOLS_SECRET }
+  allowedHosts: [edge:8443, edge, 127.0.0.1:8443, localhost:8443]
+
+sharing:
+  mode: internal
+  secret: { env: SHARING_SECRET }
+
+mcp:
+  tokensFile: mcp-tokens.yaml
+  allowedHosts: [127.0.0.1, localhost, edge, edge:8443]
+
+webhooks:
+  generic:
+    secrets: [{ env: WEBHOOK_GENERIC_SECRETS }]
+  github:
+    secrets: [{ env: WEBHOOK_GITHUB_SECRETS }]
+
+auth:
+  mode: jwt
+  jwt:
+    issuer: https://auth.example.test
+    audiences: [factory-web]
+    rolesClaim: roles
+  defaultRole: user
+  roles:
+    user: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read], scope: own, agents: ["*"] }
+    admin: { permissions: [agent.read, agent.invoke, thread.read, thread.write, thread.share, thread.delete, artifact.read, admin], scope: own, agents: ["*"] }

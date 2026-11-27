@@ -1,0 +1,179 @@
+# Edge Caddy configuration for App Factory container-only MVP (E2-T1, ADR 0073).
+# Terminates TLS on :8443 (internal CA or custom certs) and also serves :8080 for local healthchecks.
+# Enforces oauth2-proxy forward_auth on /api/*, /agui/*, /board/* (excluding /board/webhooks/*, /board/healthz, /board/readyz),
+# and web UI routes; proxies /factory-mcp/* -> factory-mcp:8091 and machine routes (/mcp, /thread-tools/*, /webhooks/*) -> orchestrator:8080.
+{
+	admin off
+	auto_https disable_redirects
+	local_certs
+}
+
+(factory_routes) {
+	handle /oauth2/* {
+		reverse_proxy oauth2-proxy:4180
+	}
+
+	@publicApi {
+		method GET HEAD
+		path /api/public/shared/*
+	}
+	handle @publicApi {
+		reverse_proxy orchestrator:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+
+	@publicAgui {
+		method GET HEAD
+		path /agui/public/shared/*
+	}
+	handle @publicAgui {
+		reverse_proxy orchestrator:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+
+	@publicWeb {
+		method GET HEAD
+		path /s/* /_next/static/* /favicon.ico /icon.svg /apple-icon.png /manifest.webmanifest /brand/*
+	}
+	handle @publicWeb {
+		reverse_proxy web:3000 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	@oauthCallback {
+		method GET
+		path /api/user-tool-servers/oauth/callback
+	}
+	handle @oauthCallback {
+		reverse_proxy orchestrator:8080 {
+			header_up -Authorization
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	handle /api/* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+		}
+	}
+
+	handle /agui/* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 8MiB
+		}
+	}
+
+	# factory-board unauthenticated machine routes (HMAC-verified webhooks and probes)
+	@boardWebhooks {
+		path /board/webhooks/*
+	}
+	handle @boardWebhooks {
+		uri strip_prefix /board
+		reverse_proxy factory-board:8090 {
+			header_up -X-Auth-Request-Email
+			request_buffers 5MiB
+		}
+	}
+
+	@boardProbes {
+		path /board/healthz /board/readyz
+	}
+	handle @boardProbes {
+		uri strip_prefix /board
+		reverse_proxy factory-board:8090
+	}
+
+	# factory-board authenticated REST/CBOR API behind oauth2-proxy JWT validation
+	handle_path /board/* {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+		}
+		reverse_proxy factory-board:8090 {
+			header_up -X-Auth-Request-Email
+		}
+	}
+
+	# factory-mcp Streamable HTTP MCP server (validates Bearer JWT & RFC 9728 step-up directly)
+	handle_path /factory-mcp/* {
+		reverse_proxy factory-mcp:8091 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 1MiB
+		}
+	}
+
+	# Per-thread MCP endpoint (thread-tools/v1): HMAC bearer token validated by orchestrator
+	handle /thread-tools/* {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 1MiB
+		}
+	}
+
+	@mcp path /mcp /mcp/*
+	handle @mcp {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			flush_interval -1
+			request_buffers 1MiB
+		}
+	}
+
+	handle /webhooks/* {
+		reverse_proxy orchestrator:8080 {
+			header_up -X-Auth-Request-Email
+			request_buffers 5MiB
+		}
+	}
+
+	handle /healthz {
+		reverse_proxy orchestrator:8080
+	}
+
+	handle /readyz {
+		reverse_proxy orchestrator:8080
+	}
+
+	handle {
+		forward_auth oauth2-proxy:4180 {
+			uri /oauth2/auth
+			copy_headers Authorization
+			@unauthenticated status 401
+			handle_response @unauthenticated {
+				redir * /oauth2/start?rd={http.request.uri.path}
+			}
+		}
+		reverse_proxy web:3000
+	}
+}
+
+http://:8080 {
+	import factory_routes
+}
+
+:8443 {
+	tls internal
+	import factory_routes
+}

@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "factory-mcp": {
+      "type": "http",
+      "url": "https://edge:8443/factory-mcp/mcp",
+      "headers": {
+        "Authorization": "Bearer ${FACTORY_MCP_TOKEN}"
+      },
+      "tools": [
+        "container_readyz_status",
+        "compose_service_status",
+        "github_actions_status",
+        "play_track_status",
+        "testflight_build_status",
+        "deploy_container_rollout",
+        "release_play_internal",
+        "release_testflight"
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# AGENTS_FILE for App Factory container-only MVP (E3-T1, ADR 0073).
+# Exposes 3 distinct model-pinned agent containers via GET /api/agents without alias collision.
+- id: adam-architect
+  name: Adam Architect
+  aliases: [architect]
+  cardUrl: http://adam-architect:8080/.well-known/agent-card.json
+  tokenEnv: ARCHITECT_A2A_TOKEN
+- id: adam-coder-fast
+  name: Adam Coder (Fast)
+  aliases: [coder-fast, backend-coder, mobile-coder]
+  cardUrl: http://adam-coder-fast:8080/.well-known/agent-card.json
+  tokenEnv: CODER_FAST_A2A_TOKEN
+  gate:
+    require: [agent-checks]
+    maxAttempts: 3
+- id: adam-coder-light
+  name: Adam Coder (Light)
+  aliases: [coder-light, ops-coder]
+  cardUrl: http://adam-coder-light:8080/.well-known/agent-card.json
+  tokenEnv: CODER_LIGHT_A2A_TOKEN
+  gate:
+    require: [agent-checks]
+    maxAttempts: 3
