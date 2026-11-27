@@ -84,8 +84,19 @@ Verify each surface manually against `E2E_SYSTEM_URL=https://127.0.0.1:${EDGE_HT
    curl -fsSk -H "Authorization: Bearer $E2E_OIDC_TOKEN" https://127.0.0.1:8443/api/agents | jq '.[].id'
    # Expected: "adam-architect", "adam-coder-fast", "adam-coder-light"
    ```
-3. **Live AG-UI Smoke Run**:
+3. **Live AG-UI Smoke Run & Isolated Feature Chat (`E5-T2`)**:
    - Send a `POST /agui/agents/adam-architect` request with a fresh `threadId` UUID and valid `Authorization: Bearer $E2E_OIDC_TOKEN` and confirm `RUN_FINISHED`.
+   - `factory-board` mints one UUID per Kanban card and stores it as `card.threadId`; that is the only thread the card's chat uses. Seed the context in the **first user message** — repo URL, `feat/<slug>` branch, `schema/app.cstack`, and a short `lib/app/` summary — rather than adding a protocol field ([ADR 0073](../../docs/decisions/0073-app-factory-board-and-model-selection.md)). The run carries the person's OIDC bearer; the orchestrator creates the thread under the edge identity and refuses a `threadId` owned by another person (404, [ADR 0039](../../docs/decisions/0039-nobody-reads-another-persons-thread.md)).
+   ```sh
+   CARD_THREAD_ID=$(uuidgen)
+   RUN_ID=$(uuidgen)
+   MESSAGE_ID=$(uuidgen)
+   curl -fsSk -N -X POST 'https://127.0.0.1:8443/agui/agents/adam-architect' \
+     -H "Authorization: Bearer $E2E_OIDC_TOKEN" -H 'Content-Type: application/json' \
+     -d "$(jq -nc --arg t "$CARD_THREAD_ID" --arg r "$RUN_ID" --arg m "$MESSAGE_ID" \
+          '{threadId:$t, runId:$r, messages:[{id:$m, role:"user", content:"Feature <slug>: repo=https://github.com/acme/app.git branch=feat/<slug> schema=schema/app.cstack context=<lib/app/ summary>. Implement it."}]}')"
+   ```
+   - Repeat with a second card's fresh `threadId`, then read `GET /api/threads/$CARD_THREAD_ID` with the same bearer: it lists only that card's messages, with no context from the first card (zero cross-card bleed).
 4. **Verification Gate (`E4-T2`)**:
    - Inside any generated `app-factory-blueprint` working tree, run [`dev/agent-checks.sh`](../../dev/agent-checks.sh) to enforce `cratestack check`, `cratestack contract check`, `cratestack diff`, `cratestack generate-dart --preset fespalier --fespalier-ref v0.26.0 --check`, `fsp check`, `flutter test`, `cargo test --locked`, and `docker compose` validation.
 
