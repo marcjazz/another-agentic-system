@@ -7,7 +7,7 @@
   tokenEnv: ARCHITECT_A2A_TOKEN
 - id: adam-coder-fast
   name: Adam Coder (Fast)
-  aliases: [coder-fast, backend-coder, mobile-coder]
+  aliases: [coder-fast, backend-coder, mobile-coder, cratestack-backend, fespalier-mobile]
   cardUrl: http://adam-coder-fast:8080/.well-known/agent-card.json
   tokenEnv: CODER_FAST_A2A_TOKEN
   gate:
@@ -15,7 +15,7 @@
     maxAttempts: 3
 - id: adam-coder-light
   name: Adam Coder (Light)
-  aliases: [coder-light, ops-coder]
+  aliases: [coder-light, ops-coder, cloud-store-ops]
   cardUrl: http://adam-coder-light:8080/.well-known/agent-card.json
   tokenEnv: CODER_LIGHT_A2A_TOKEN
   gate:

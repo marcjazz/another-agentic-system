@@ -3,6 +3,7 @@
     "factory-mcp": {
       "type": "http",
       "url": "https://edge:8443/factory-mcp/mcp",
+      "optional": true,
       "headers": {
         "Authorization": "Bearer ${FACTORY_MCP_TOKEN}"
       },

@@ -28,6 +28,8 @@ services:
     profiles: !override []
     environment:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+    volumes:
+      - ./dev/coder-postgres-init:/docker-entrypoint-initdb.d:ro
 
   # Disable local mock OIDC issuer in factory mode; real OIDC is required.
   mock-oidc:
@@ -78,6 +80,18 @@ services:
       - "127.0.0.1:${EDGE_HTTPS_PORT:-8443}:8443"
     volumes: !override
       - ./dev/Caddyfile.factory:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-ca:/etc/caddy-ca
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "if [ -f /data/caddy/pki/authorities/local/root.crt ]; then cp -f /data/caddy/pki/authorities/local/root.crt /etc/caddy-ca/root.crt && chmod 0644 /etc/caddy-ca/root.crt; fi && wget -q -O /dev/null http://127.0.0.1:8080/readyz",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
     depends_on:
       factory-board:
         condition: service_started
@@ -87,48 +101,53 @@ services:
   web:
     profiles: !override []
 
-  # Override inherited MCP_ALLOW_INSECURE="true" on legacy agent services so factory stack never allows plaintext non-loopback MCP.
+  # Disable legacy compose.yaml/compose.live.yaml agents by default in factory mode (opt-in via
+  # `--profile legacy-agents`), while keeping MCP_ALLOW_INSECURE="false" so security checks pass.
   coder:
-    profiles: !override []
+    profiles: !override [legacy-agents]
     depends_on: !override
       coder-postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@coder-postgres:5432/coder"
       MCP_ALLOW_INSECURE: "false"
 
   github-mcp:
-    profiles: !override []
+    profiles: !override [legacy-agents]
 
   chat:
-    profiles: !override []
+    profiles: !override [legacy-agents]
     depends_on: !override
       agents-postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@agents-postgres:5432/agents"
       MCP_ALLOW_INSECURE: "false"
 
   researcher:
-    profiles: !override []
+    profiles: !override [legacy-agents]
     depends_on: !override
       agents-postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@agents-postgres:5432/agents"
       MCP_ALLOW_INSECURE: "false"
 
   browser-obscura:
-    profiles: !override []
+    profiles: !override [legacy-agents]
 
   browser-site:
-    profiles: !override []
+    profiles: !override [legacy-agents]
 
   browser:
-    profiles: !override []
+    profiles: !override [legacy-agents]
     depends_on: !override
       browser-obscura:
         condition: service_started
       agents-postgres:
         condition: service_healthy
     environment:
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@agents-postgres:5432/agents"
       MCP_ALLOW_INSECURE: "false"
 
   factory-board:
@@ -179,6 +198,7 @@ services:
       - ./dev/agents.factory.yaml:/etc/orchestrator/agents.factory.yaml:ro
       - ./dev/mcp-tokens.yaml:/etc/orchestrator/mcp-tokens.yaml:ro
       - orchestrator-artifacts:/var/lib/orchestrator/artifacts
+      - caddy-ca:/etc/caddy-ca:ro
     environment:
       ORCH_CONFIG_FILE: /etc/orchestrator/config.yaml
       DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/orch"
@@ -195,15 +215,21 @@ services:
       ORCH_MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env}"
       ORCH_MODEL_API_KEY: "${MODEL_API_KEY:-}"
       ORCH_TITLE_MODEL: "${TITLE_MODEL:-${MODEL:?set MODEL in .env}}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-/etc/ssl/certs:/etc/caddy-ca}"
 
   # ---- Model-pinned agent containers (E3-T1, ADR 0073) -----------------------------------------------------
   adam-architect:
     image: *factory-adam-image
     platform: linux/amd64
     entrypoint: ["tini", "--", "adam-agent"]
+    restart: unless-stopped
     depends_on:
       agents-postgres:
         condition: service_healthy
+      edge:
+        condition: service_healthy
+      factory-mcp:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@agents-postgres:5432/agents"
       MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env}"
@@ -212,9 +238,11 @@ services:
       A2A_BEARER_TOKENS: "${ARCHITECT_A2A_TOKEN:?set ARCHITECT_A2A_TOKEN in .env}"
       PUBLIC_URL: http://adam-architect:8080/
       ADAM_AGENT_DIR: /etc/adam/agent
-      FACTORY_MCP_TOKEN: "${FACTORY_MCP_TOKEN:-}"
+      FACTORY_MCP_TOKEN: "${FACTORY_MCP_TOKEN:-replace-with-factory-mcp-oidc-token}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-/etc/ssl/certs:/etc/caddy-ca}"
     volumes:
       - ${ARCHITECT_AGENT_DIR:-./dev/agents/architect/agent}:/etc/adam/agent:ro
+      - caddy-ca:/etc/caddy-ca:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -227,11 +255,12 @@ services:
   adam-coder-fast:
     image: *factory-adam-image
     platform: linux/amd64
+    restart: unless-stopped
     depends_on:
       coder-postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@coder-postgres:5432/coder"
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@coder-postgres:5432/coder_fast"
       MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env}"
       MODEL_API_KEY: "${MODEL_API_KEY:-}"
       MODEL: "${CODER_FAST_MODEL:-${MODEL:?set MODEL or CODER_FAST_MODEL in .env}}"
@@ -251,10 +280,12 @@ services:
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
       PR_DRAFT: "${PR_DRAFT:-false}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-/etc/ssl/certs:/etc/caddy-ca}"
     volumes:
       - coder-fast-work:/work
       - ${CODER_FAST_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-./dev/coder/no-github-app-key.pem}:/run/github-app/key.pem:ro
+      - caddy-ca:/etc/caddy-ca:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -294,11 +325,12 @@ services:
   adam-coder-light:
     image: *factory-adam-image
     platform: linux/amd64
+    restart: unless-stopped
     depends_on:
       coder-postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@coder-postgres:5432/coder"
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@coder-postgres:5432/coder_light"
       MODEL_BASE_URL: "${MODEL_BASE_URL:?set MODEL_BASE_URL in .env}"
       MODEL_API_KEY: "${MODEL_API_KEY:-}"
       MODEL: "${CODER_LIGHT_MODEL:-${MODEL:?set MODEL or CODER_LIGHT_MODEL in .env}}"
@@ -318,10 +350,12 @@ services:
       GIT_AUTHOR_NAME: "${GIT_AUTHOR_NAME:-adam-coder}"
       GIT_AUTHOR_EMAIL: "${GIT_AUTHOR_EMAIL:-adam-coder@users.noreply.github.com}"
       PR_DRAFT: "${PR_DRAFT:-false}"
+      SSL_CERT_DIR: "${SSL_CERT_DIR:-/etc/ssl/certs:/etc/caddy-ca}"
     volumes:
       - coder-light-work:/work
       - ${CODER_LIGHT_AGENT_DIR:-./dev/coder/agent}:/etc/adam/agent:ro
       - ${GITHUB_APP_PRIVATE_KEY_FILE:-./dev/coder/no-github-app-key.pem}:/run/github-app/key.pem:ro
+      - caddy-ca:/etc/caddy-ca:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -361,3 +395,5 @@ services:
 volumes:
   coder-fast-work:
   coder-light-work:
+  caddy-data:
+  caddy-ca:

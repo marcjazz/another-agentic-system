@@ -18,10 +18,17 @@ Before running the factory stack live, prepare an `.env.factory` file from [`.en
 3. **GitHub access & webhooks**:
    - `GITHUB_TOKEN` (or `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY_FILE` + `GITHUB_APP_OWNERS` / `GITHUB_APP_INSTALLATION_ID`).
    - `GITHUB_WEBHOOK_SECRET`, `WEBHOOK_GITHUB_SECRETS`, `DEPLOY_WEBHOOK_SECRET` (32+ random bytes each).
-4. **Per-agent A2A & MCP secrets**:
-   - `ARCHITECT_A2A_TOKEN`, `CODER_FAST_A2A_TOKEN`, `CODER_LIGHT_A2A_TOKEN`, `MCP_TOKEN_DEV`, `THREAD_TOOLS_SECRET`, `SHARING_SECRET`, `POSTGRES_PASSWORD`, `FACTORY_MCP_TOKEN`.
-5. **Non-privileged Edge ports**:
+4. **Per-agent A2A, Postgres, & MCP secrets**:
+   - `ARCHITECT_A2A_TOKEN`, `CODER_FAST_A2A_TOKEN`, `CODER_LIGHT_A2A_TOKEN`, `MCP_TOKEN_DEV`, `THREAD_TOOLS_SECRET`, `SHARING_SECRET`, `POSTGRES_PASSWORD`.
+   - **`FACTORY_MCP_TOKEN` (Live OIDC Token Required)**: `factory-mcp` validates bearer JWTs against `OIDC_JWKS_URL` / `OIDC_AUDIENCE`. [`compose.factory.yaml`](../../compose.factory.yaml) supplies a non-empty placeholder fallback so `adam-architect` never crashes at header expansion, and [`dev/agents/architect/agent/mcp.json`](../../dev/agents/architect/agent/mcp.json) marks `factory-mcp` `"optional": true` so startup succeeds cleanly even before a live token is provisioned — however, **live `factory-mcp` tool calls require a real OIDC bearer JWT** in `FACTORY_MCP_TOKEN` (with the placeholder, `factory-mcp` rejects auth with `401` and `adam-architect` starts without `factory-mcp` tools).
+5. **Non-privileged Edge ports & Caddy `tls internal` CA Trust**:
    - `EDGE_HTTP_PORT` (default `8080`) and `EDGE_HTTPS_PORT` (default `8443`), both bound to `127.0.0.1` so port `80` is never claimed.
+   - When [`dev/Caddyfile.factory`](../../dev/Caddyfile.factory) serves `:8443` with `tls internal`, `edge` persists its PKI in `caddy-data:/data` and exports only the public root CA (`/data/caddy/pki/authorities/local/root.crt`, never `root.key`) to `caddy-ca:/etc/caddy-ca/root.crt` during its healthcheck. `adam-architect` waits for `edge` (`service_healthy`) and `factory-mcp` (`service_started`), and `adam-architect`, `adam-coder-fast`, `adam-coder-light`, and `orchestrator` mount `caddy-ca:/etc/caddy-ca:ro` with `SSL_CERT_DIR=/etc/ssl/certs:/etc/caddy-ca` so `rustls`/`reqwest` trusts both public system CAs and Caddy's internal CA for `https://edge:8443` (`THREAD_TOOLS_URL` and `factory-mcp`). When using real external/ACME certs instead of `tls internal`, `/etc/caddy-ca` stays empty and `/etc/ssl/certs` works unchanged.
+6. **Isolated Agent DB Queues, Agent Folders, & Specialist `@mentions`**:
+   - `coder-postgres` initializes separate `coder_fast` and `coder_light` databases via [`dev/coder-postgres-init/10-coder-databases.sql`](../../dev/coder-postgres-init/10-coder-databases.sql) so `adam-coder-fast` and `adam-coder-light` never share `adam_runs` rows or cross `/work` volumes. (If upgrading an existing `coder-postgres-data` volume created before this change, run `docker compose ... down -v` first so `initdb.d` executes.)
+   - Legacy `compose.yaml` agents (`coder`, `chat`, `researcher`, `browser` and their sidecars) are placed in the `legacy-agents` profile (`MCP_ALLOW_INSECURE: "false"`) and remain off by default (`--profile legacy-agents` to opt in).
+   - `ARCHITECT_AGENT_DIR` defaults to `./dev/agents/architect/agent`, while `CODER_FAST_AGENT_DIR` and `CODER_LIGHT_AGENT_DIR` default to `./dev/coder/agent` (note: `adam-coder` requires `name: coder` in the root `agent/instructions.md` mounted at `/etc/adam/agent`).
+   - [`dev/agents.factory.yaml`](../../dev/agents.factory.yaml) routes `@cratestack-backend` and `@fespalier-mobile` as aliases on `adam-coder-fast`, and `@cloud-store-ops` as an alias on `adam-coder-light`.
 
 ## Offline Validation (No Secrets or Daemons Required)
 
@@ -37,10 +44,17 @@ docker compose -f compose.yaml -f compose.factory.yaml --env-file .env.factory.e
 # 3. Must fail closed when required OIDC/model/token env vars are stripped
 env -i PATH="$PATH" HOME="$HOME" docker compose -f compose.yaml -f compose.live.yaml -f compose.factory.yaml --env-file /dev/null config -q
 
-# 4. Validate Caddy TLS reverse-proxy config
+# 4. Must also fail closed when the real OIDC issuer is blanked (no mock-oidc fallback):
+sed 's|^OAUTH2_PROXY_OIDC_ISSUER_URL=.*|OAUTH2_PROXY_OIDC_ISSUER_URL=|' \
+  .env.factory.example > /tmp/no-oidc.factory.env
+docker compose -f compose.yaml -f compose.live.yaml -f compose.factory.yaml --env-file /tmp/no-oidc.factory.env config -q
+# Expected: "required variable OAUTH2_PROXY_OIDC_ISSUER_URL is missing a value" for
+# oauth2-proxy, factory-board and factory-mcp.
+
+# 5. Validate Caddy TLS reverse-proxy config
 docker run --rm -v "$PWD/dev/Caddyfile.factory:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
-# 5. Docs and agent sync gates
+# 6. Docs and agent sync gates
 node tools/agents/sync.mjs --check
 node tools/docs-check/check-docs.mjs
 ```
