@@ -11,6 +11,7 @@ import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
 // `next dev` is not an export: it forwards /api/* (the resource API), /agui/* (AG-UI) and, against the mock, /oauth2/* (the
 // edge's routes) to the mock server (MOCK_API_ORIGIN) or a real orchestrator (API_ORIGIN), as the edge does in a deployment.
 const apiOrigin = process.env.API_ORIGIN ?? process.env.MOCK_API_ORIGIN;
+const devBoardOrigin = process.env.BOARD_ORIGIN;
 const mockEdge = !process.env.API_ORIGIN && !!process.env.MOCK_API_ORIGIN;
 // `pnpm build:session` and `pnpm build:browser` export beside the build the other specs use.
 const distDir = process.env.NEXT_DIST_DIR;
@@ -35,12 +36,16 @@ export default function config(phase: string): NextConfig {
     return {
       ...shared,
       async rewrites() {
-        return apiOrigin
+        const apiRewrites = apiOrigin
           ? ["api", "agui", ...(mockEdge ? ["oauth2"] : [])].map((prefix) => ({
               source: `/${prefix}/:path*`,
               destination: `${apiOrigin}/${prefix}/:path*`,
             }))
           : [];
+        const boardRewrites = devBoardOrigin
+          ? [{ source: "/board/:path*", destination: `${devBoardOrigin}/:path*` }]
+          : [];
+        return [...apiRewrites, ...boardRewrites];
       },
     };
   }

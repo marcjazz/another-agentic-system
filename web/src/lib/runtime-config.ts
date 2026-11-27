@@ -13,6 +13,9 @@
  *                 (the desktop app: the system browser and a listener on 127.0.0.1, RFC 8252), or
  *                 `claimed` (the mobile app: an app/universal HTTPS link received from the native shell).
  *   organisation  the name the sign-in screen gives the account ("Sign in with your … account").
+ *   boardOrigin   where factory-board is, `https://board.example.com` (a separate edge). Absent: the
+ *                 same-origin `/board/*` routes of the factory Caddy, which strip the prefix before
+ *                 proxying to factory-board (ADR 0073). It is an origin, never a path with a prefix.
  */
 
 export type SignInMode = "redirect" | "loopback" | "claimed";
@@ -22,14 +25,15 @@ export type RuntimeConfig = {
   clientId?: string;
   signIn?: SignInMode;
   organisation?: string;
+  boardOrigin?: string;
 };
 
 export const RUNTIME_CONFIG_PATH = "/config.json";
 
 const isLoopbackHost = (host: string) => ["localhost", "127.0.0.1", "[::1]"].includes(host);
 
-/** An origin the page may send its tokens to: https, or http on this machine (a local run). */
-export function isApiOrigin(value: unknown): value is string {
+/** An origin the page may send a request to: https, or http on this machine (a local run). */
+export function isConfiguredOrigin(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
@@ -42,13 +46,19 @@ export function isApiOrigin(value: unknown): value is string {
   }
 }
 
+/** The old name of {@link isConfiguredOrigin}, kept for callers that speak about the API. */
+export const isApiOrigin = isConfiguredOrigin;
+
 const isClientId = (value: unknown): value is string =>
   typeof value === "string" && /^[\x21-\x7e]{1,200}$/.test(value);
 
 /** The keys of a parsed file that are right; the others are dropped. */
 export function parseRuntimeConfig(body: unknown): RuntimeConfig {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return {};
-  const { apiOrigin, clientId, signIn, organisation } = body as Record<string, unknown>;
+  const { apiOrigin, clientId, signIn, organisation, boardOrigin } = body as Record<
+    string,
+    unknown
+  >;
   return {
     ...(isApiOrigin(apiOrigin) ? { apiOrigin } : {}),
     ...(isClientId(clientId) ? { clientId } : {}),
@@ -56,6 +66,7 @@ export function parseRuntimeConfig(body: unknown): RuntimeConfig {
     ...(typeof organisation === "string" && organisation.trim() && organisation.length <= 120
       ? { organisation: organisation.trim() }
       : {}),
+    ...(isApiOrigin(boardOrigin) ? { boardOrigin } : {}),
   };
 }
 
@@ -92,28 +103,50 @@ const pageOrigin = (): string | undefined =>
 /** The origin the API is at: the configured one, else the page's own. */
 export const apiOrigin = (): string | undefined => runtimeConfig().apiOrigin ?? pageOrigin();
 
+/** The origin factory-board is at when configured separately (`boardOrigin`), else the page's own. */
+export const boardOrigin = (): string | undefined => runtimeConfig().boardOrigin ?? pageOrigin();
+
+/**
+ * The basePath for `FactoryBoardSdkClient` (`""` when `boardOrigin` is configured directly since
+ * factory-board mounts routes at `/`, else `"/board"` for same-origin Caddy `handle_path /board/*`).
+ */
+export const boardBasePath = (): string => (runtimeConfig().boardOrigin ? "" : "/board");
+
 /** The API's routes: the resource API and AG-UI. */
 export const isApiPath = (pathname: string): boolean =>
   pathname.startsWith("/api/") || pathname.startsWith("/agui/");
 
+/** factory-board's routes at this page's origin (the factory Caddy strips `/board` before proxying). */
+export const isBoardPath = (pathname: string): boolean =>
+  pathname === "/board" || pathname.startsWith("/board/");
+
 /** Whether a request the clients made with a path of this page goes to another origin (`atApi`). */
 function elsewhere(request: Request): string | undefined {
-  const configured = runtimeConfig().apiOrigin;
+  const { apiOrigin: api, boardOrigin: board } = runtimeConfig();
   const here = pageOrigin();
-  if (!configured || !here || configured === here) return undefined;
+  if ((!api || api === here) && (!board || board === here)) return undefined;
   try {
     const url = new URL(request.url);
-    if (url.origin !== here || !isApiPath(url.pathname)) return undefined;
-    return `${configured}${url.pathname}${url.search}`;
+    if (url.origin !== here) return undefined;
+    if (api && api !== here && isApiPath(url.pathname)) {
+      return `${api}${url.pathname}${url.search}`;
+    }
+    // factory-board mounts its routes at `/`, not under `/board`: the Caddy's `handle_path /board/*`
+    // strips the prefix on the same-origin route, and the direct origin must do the same.
+    if (board && board !== here && isBoardPath(url.pathname)) {
+      return `${board}${url.pathname.slice("/board".length)}${url.search}`;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
 }
 
 /**
- * A request the clients made with a path of this page (`/api/...`, `/agui/...`), sent to the API's origin
- * when that is another one; any other request as it is. The body is read and sent again (a request whose
- * body is a stream cannot be given a new URL without it), and so are the headers and the signal.
+ * A request the clients made with a path of this page (`/api/...`, `/agui/...`, `/board/...`), sent to
+ * the API's or factory-board's origin when that is another one; any other request as it is. The body is
+ * read and sent again (a request whose body is a stream cannot be given a new URL without it), and so
+ * are the headers and the signal.
  */
 export async function atApi(request: Request): Promise<Request> {
   await runtimeReady();
@@ -135,6 +168,16 @@ export async function atApi(request: Request): Promise<Request> {
 export function apiUrl(path: string): string {
   const configured = runtimeConfig().apiOrigin;
   return configured && path.startsWith("/") ? `${configured}${path}` : path;
+}
+
+/**
+ * The URL of a factory-board path. Configured: at `boardOrigin`, whose routes are mounted at `/`.
+ * Otherwise: this page's own `/board/...`, which the factory Caddy strips before proxying.
+ */
+export function boardUrl(path: string): string {
+  const configured = runtimeConfig().boardOrigin;
+  if (!path.startsWith("/")) return path;
+  return configured ? `${configured}${path}` : `/board${path}`;
 }
 
 /** Fixes the configuration (a test): `undefined` reads the file again. */

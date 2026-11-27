@@ -5,6 +5,7 @@
     "includes": [
       "**",
       "!src/lib/api/schema.d.ts",
+      "!src/lib/board/sdk",
       "!.next",
       "!.next-session",
       "!.next-browser",
